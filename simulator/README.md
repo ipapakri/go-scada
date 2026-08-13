@@ -16,7 +16,7 @@ Open:
 
 - Node-RED editor: `http://localhost:1880`
 - Simulator dashboard: `http://localhost:1880/dashboard/plant`
-- SCADA designer: `http://localhost:8080`
+- SCADA designer plant view: `http://localhost:8080`
 - NATS monitoring: `http://localhost:8222`
 
 If port 1880 is already in use, choose another host port:

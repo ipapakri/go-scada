@@ -55,10 +55,12 @@ make simulator-up
 ```
 
 Open the process dashboard at `http://localhost:1880/dashboard/plant` and the
-SCADA designer at `http://localhost:8080`. The simulated tank, pumps, valves,
-and analog sensors are available on host ports 1502 through 1504. See
-`simulator/README.md` for the register map, controls, fault scenarios, and
-verification commands.
+SCADA designer at `http://localhost:8080`. The designer **Plant** tab shows live
+tank, pump, valve, and utility values plus alarms. The browser talks only to the
+Go gateway WebSocket; NATS is never exposed to frontend code. The simulated
+tank, pumps, valves, and analog sensors are available on host ports 1502 through
+1504. See `simulator/README.md` for the register map, controls, fault scenarios,
+and verification commands.
 
 ### Configuration behavior
 

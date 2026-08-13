@@ -109,6 +109,12 @@ beforeEach(() => {
 })
 
 describe('Modbus Designer', () => {
+  it('opens on the plant overview', async () => {
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: 'Plant overview' })).toBeVisible()
+    expect(screen.getByText('No plant telemetry yet')).toBeVisible()
+  })
+
   it('uses enabled connections and enforces register encoding constraints', async () => {
     const user = userEvent.setup()
     render(<App />)
@@ -193,6 +199,7 @@ describe('Modbus Designer', () => {
     })
 
     render(<App />)
+    await user.click(await screen.findByRole('button', { name: /Alarms/ }))
     expect(await screen.findByText('Tank level is high')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Acknowledge' }))
 

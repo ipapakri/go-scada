@@ -3,6 +3,7 @@ import './App.css'
 import { AlertConfigForm } from './AlertConfigForm'
 import { AlarmPanel } from './AlarmPanel'
 import { AlertPropertiesForm } from './AlertPropertiesForm'
+import { PlantView } from './PlantView'
 import { ApiError, api, errorMessage } from './api'
 import {
   alertInputSubject,
@@ -397,8 +398,8 @@ function App() {
   const [alertProperties, setAlertProperties] = useState<AlertProperties[]>([])
   const [alertConfigs, setAlertConfigs] = useState<AlertConfig[]>([])
   const [activeView, setActiveView] = useState<
-    'connections' | 'addresses' | 'alarms' | 'alert-properties' | 'alert-configs'
-  >('alarms')
+    'plant' | 'connections' | 'addresses' | 'alarms' | 'alert-properties' | 'alert-configs'
+  >('plant')
   const [selectedConnection, setSelectedConnection] = useState<Connection | null>(null)
   const [selectedAddress, setSelectedAddress] = useState<Address | null>(null)
   const [selectedAlertProperties, setSelectedAlertProperties] =
@@ -609,7 +610,9 @@ function App() {
     selectedAlertConfig
   const enabledConnections = connections.filter((item) => item.enabled)
   const isAlarmWorkspace = activeView.startsWith('alert-') || activeView === 'alarms'
+  const liveIndicator = isAlarmWorkspace ? alarmLiveStatus : liveStatus
   const hero = {
+    plant: ['Operator workspace', 'Plant overview', 'Watch live tank, pump, valve, and utility values from the simulator stream.'],
     alarms: ['Operator workspace', 'Alarm overview', 'Monitor current alarm episodes and acknowledge conditions requiring attention.'],
     'alert-properties': ['Alarm configuration', 'Presentation properties', 'Manage reusable priorities, colors, labels, and acknowledgement policies.'],
     'alert-configs': ['Alarm configuration', 'Alert definitions', 'Build binary, value-range, and summary alarm evaluations.'],
@@ -622,6 +625,7 @@ function App() {
     'alert-properties': 'properties',
     'alert-configs': 'definition',
     alarms: '',
+    plant: '',
   }[activeView]
 
   return (
@@ -634,9 +638,9 @@ function App() {
             <small>Operations & configuration</small>
           </div>
         </div>
-        <div className={`live-status ${isAlarmWorkspace ? alarmLiveStatus : liveStatus}`}>
+        <div className={`live-status ${liveIndicator}`}>
           <span />
-          Live {isAlarmWorkspace ? alarmLiveStatus : liveStatus}
+          Live {liveIndicator}
         </div>
       </header>
 
@@ -655,6 +659,15 @@ function App() {
         </section>
 
         <nav className="tabs" aria-label="Designer sections">
+          <button
+            className={activeView === 'plant' ? 'active' : ''}
+            onClick={() => {
+              setActiveView('plant')
+              closeEditor()
+            }}
+          >
+            Plant
+          </button>
           <button
             className={activeView === 'alarms' ? 'active' : ''}
             onClick={() => {
@@ -716,6 +729,14 @@ function App() {
           <section className="resource-panel">
             {loading ? (
               <div className="empty-state">Loading configuration…</div>
+            ) : activeView === 'plant' ? (
+              <PlantView
+                addresses={addresses}
+                values={values}
+                alerts={alerts}
+                liveStates={liveAlertStates}
+                onAcknowledge={acknowledgeAlert}
+              />
             ) : activeView === 'alarms' ? (
               <AlarmPanel
                 alerts={alerts}

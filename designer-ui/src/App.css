@@ -140,6 +140,7 @@ main {
 
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   border-bottom: 1px solid var(--border);
   margin-bottom: 24px;
 }
@@ -565,6 +566,298 @@ main {
   min-height: 260px;
 }
 
+.plant-view {
+  display: grid;
+  gap: 16px;
+}
+
+.plant-alarms {
+  display: grid;
+  gap: 8px;
+}
+
+.plant-alarm {
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 5px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 0 12px 0 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.plant-alarm.active {
+  border-color: #fda4af;
+  background: #fff1f2;
+}
+
+.plant-alarm.pending {
+  border-color: #fcd34d;
+  background: #fffbeb;
+}
+
+.plant-alarm strong {
+  display: block;
+  font-size: 0.84rem;
+}
+
+.plant-alarm small {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.plant-alarm .button.acknowledge {
+  width: auto;
+}
+
+.plant-flow,
+.plant-grid,
+.pump-row,
+.tank-body,
+.plant-metrics {
+  display: grid;
+  gap: 12px;
+}
+
+.plant-flow {
+  grid-template-columns: minmax(180px, 0.7fr) 28px minmax(280px, 1.4fr) 28px minmax(180px, 0.7fr);
+  align-items: stretch;
+}
+
+.plant-grid {
+  grid-template-columns: minmax(0, 1.4fr) minmax(260px, 0.8fr);
+}
+
+.plant-pipe {
+  align-self: center;
+  height: 6px;
+  border-radius: 99px;
+  background: linear-gradient(90deg, #99f6e4, #0d9488);
+}
+
+.plant-card,
+.plant-subcard {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.plant-card.alarm {
+  border-color: #fda4af;
+  box-shadow: 0 0 0 3px rgba(190, 18, 60, 0.08);
+}
+
+.plant-card > header,
+.plant-subcard > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.plant-card h3,
+.plant-subcard h3 {
+  margin: 0;
+  font-size: 0.92rem;
+  letter-spacing: -0.02em;
+}
+
+.plant-subcard {
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--surface-alt);
+}
+
+.plant-lamps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.plant-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+}
+
+.plant-metrics.stacked {
+  grid-template-columns: 1fr;
+}
+
+.plant-metrics.compact {
+  margin: 0;
+}
+
+.plant-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.plant-metric span {
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.plant-metric strong {
+  font-family: var(--mono);
+  font-size: 0.92rem;
+}
+
+.plant-lamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--surface-alt);
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.plant-lamp > span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.plant-lamp.on {
+  color: var(--success);
+  background: #ecfdf3;
+}
+
+.plant-lamp.on > span {
+  background: var(--success);
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.14);
+}
+
+.plant-lamp.off > span {
+  background: #cbd5e1;
+}
+
+.plant-lamp.fault {
+  color: var(--danger);
+  background: #fff1f2;
+}
+
+.plant-lamp.fault > span {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px rgba(190, 18, 60, 0.14);
+}
+
+.plant-lamp.ok > span,
+.plant-lamp.unknown > span {
+  background: #94a3b8;
+}
+
+.tank-body {
+  grid-template-columns: 140px minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.tank-shell {
+  position: relative;
+  overflow: hidden;
+  min-height: 180px;
+  border: 2px solid #5eead4;
+  border-radius: 0 0 22px 22px;
+  background: linear-gradient(180deg, #f8fffe, #e6f7f5);
+}
+
+.tank-fill {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: linear-gradient(180deg, #5eead4, #0f766e);
+  transition: height 400ms ease;
+}
+
+.tank-shell strong {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 1.05rem;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.65);
+  z-index: 1;
+}
+
+.valve-track {
+  overflow: hidden;
+  height: 10px;
+  margin-bottom: 12px;
+  border-radius: 99px;
+  background: #dbe7e4;
+}
+
+.valve-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 400ms ease;
+}
+
+.valve.open .valve-fill {
+  background: #0f766e;
+}
+
+.pump-row {
+  grid-template-columns: 1fr 1fr;
+}
+
+.pump > header {
+  align-items: center;
+}
+
+.pump-rotor {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  border: 3px solid #99f6e4;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: white;
+}
+
+.pump-rotor > span {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: conic-gradient(from 0deg, #0d9488 0 25%, transparent 0 50%, #0d9488 0 75%, transparent 0);
+}
+
+.pump-rotor.spinning {
+  animation: pump-spin 1.1s linear infinite;
+}
+
+.pump.tripped {
+  border-color: #fda4af;
+}
+
+.pump.running .pump-rotor {
+  border-color: var(--success);
+}
+
+@keyframes pump-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .editor-panel {
   position: sticky;
   top: 90px;
@@ -973,6 +1266,19 @@ main {
 
   .alarm-state {
     display: none;
+  }
+
+  .plant-flow,
+  .plant-grid,
+  .pump-row,
+  .tank-body {
+    grid-template-columns: 1fr;
+  }
+
+  .plant-pipe {
+    width: 6px;
+    height: 22px;
+    justify-self: center;
   }
 }
 
