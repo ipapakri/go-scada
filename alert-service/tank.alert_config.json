@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "enabled": true,
+  "type": "summary",
+  "summary": {
+    "members": [
+      "tank.level_high.alert",
+      "tank.temperature.alert"
+    ]
+  }
+}

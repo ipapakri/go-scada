@@ -1,0 +1,20 @@
+# Go build and test artifacts
+/bin/
+*.test
+*.out
+coverage.*
+
+# Runtime data
+/nats-data/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store

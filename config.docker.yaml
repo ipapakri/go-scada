@@ -1,0 +1,3 @@
+nats_url: nats://nats:4222
+stream_name: EVENTS
+system_name: factory1

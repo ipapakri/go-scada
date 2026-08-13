@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "color": "#ef4444",
+  "abbreviation": "ALM",
+  "short_sign": "A",
+  "priority": 100,
+  "requires_acknowledgement": true
+}

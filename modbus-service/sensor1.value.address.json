@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "driver": "modbus",
+  "value_type": "float64",
+  "enabled": true,
+  "connection": "Modbus.Modbus1.config",
+  "config": {
+    "register": "holding",
+    "address": 100,
+    "encoding": "float32"
+  }
+}

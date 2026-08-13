@@ -1,0 +1,1 @@
+{"version":1,"active":true,"pending":true,"property":"AlertProperties.Alarm","color":"#ef4444","abbreviation":"ALM","short_sign":"A","priority":100,"requires_acknowledgement":true,"text":"Tank temperature is high","acknowledged":true,"came_time":"2026-08-13T13:00:57.644822137Z","episode_id":"1786626057644822738-11"}

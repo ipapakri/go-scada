@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "enabled": true,
+  "type": "binary",
+  "binary": {
+    "bad_value": true,
+    "true": {
+      "property": "AlertProperties.Alarm",
+      "text": "Tank level is high"
+    },
+    "false": {
+      "text": "Tank level is normal"
+    }
+  }
+}

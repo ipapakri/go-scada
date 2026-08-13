@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package go_scada.telemetry.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "go-scada/gen/go/go_scada/telemetry/v1;telemetryv1";
+
+// Message is a single timestamped telemetry value.
+message Message {
+  // Monotonically increasing sequence number for this point.
+  // Consumers can use it to reject stale or out-of-order messages.
+  uint64 sequence = 1;
+
+  Value value = 2;
+
+  Quality quality = 3;
+
+  // Time at which the value was measured or observed.
+  google.protobuf.Timestamp observed_at = 4;
+
+  Source source = 5;
+
+  // Engineering unit, when known.
+  // Examples: "°C", "rpm", "bar"
+  optional string unit = 6;
+
+  // Unique identifier for this message, used for deduplication and tracing.
+  string message_id = 7;
+
+  // Time after which consumers should reject this message.
+  google.protobuf.Timestamp expires_at = 8;
+
+  // Application-specific attributes.
+  map<string, string> metadata = 9;
+}
+
+// Source identifies the system that produced a message.
+message Source {
+  // Examples: "plc-01", "gateway-17", "simulation"
+  string id = 1;
+
+  // Source category, when known.
+  optional string type = 2;
+}
+
+enum Quality {
+  QUALITY_UNSPECIFIED = 0;
+  QUALITY_GOOD = 1;
+  QUALITY_UNCERTAIN = 2;
+  QUALITY_BAD = 3;
+  QUALITY_STALE = 4;
+}
+
+// Value contains exactly one supported scalar or array value.
+message Value {
+  oneof kind {
+    int64 int_value = 1;
+    double float_value = 2;
+    string string_value = 3;
+    bool bool_value = 4;
+    bytes bytes_value = 5;
+
+    IntArray int_array = 10;
+    DoubleArray float_array = 11;
+    StringArray string_array = 12;
+    BoolArray bool_array = 13;
+  }
+}
+
+message IntArray {
+  repeated int64 values = 1;
+}
+
+message DoubleArray {
+  repeated double values = 1;
+}
+
+message StringArray {
+  repeated string values = 1;
+}
+
+message BoolArray {
+  repeated bool values = 1;
+}

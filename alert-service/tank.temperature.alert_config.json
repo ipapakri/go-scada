@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "enabled": true,
+  "type": "value",
+  "value": {
+    "value_type": "float64",
+    "intervals": [
+      {
+        "min": null,
+        "max": 80,
+        "active": false,
+        "text": "Tank temperature is normal"
+      },
+      {
+        "min": 80,
+        "max": null,
+        "active": true,
+        "property": "AlertProperties.Alarm",
+        "text": "Tank temperature is high"
+      }
+    ]
+  }
+}
