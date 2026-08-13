@@ -32,9 +32,6 @@ func readValue(reader deviceReader, point Point) (any, error) {
 		registerType = simonmodbus.INPUT_REGISTER
 	}
 	count := registerCount(point.Encoding) * 2
-	fmt.Println("point", point)
-	fmt.Println("count", count)
-	fmt.Println("registerType", registerType)
 	raw, err := reader.ReadRawBytes(point.Address, count, registerType)
 	if err != nil {
 		return nil, err
@@ -48,9 +45,7 @@ func readValue(reader deviceReader, point Point) (any, error) {
 			expectedLength,
 		)
 	}
-	fmt.Println("raw", raw)
 	ordered := reorder(raw, point.ByteOrder, point.WordOrder)
-	fmt.Println("ordered", ordered)
 	switch point.Encoding {
 	case EncodingInt16:
 		return int64(int16(binary.BigEndian.Uint16(ordered))), nil
