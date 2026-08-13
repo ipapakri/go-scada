@@ -13,7 +13,8 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /out/designer-service ./designer-service && \
     CGO_ENABLED=0 go build -o /out/bootstrap ./bootstrap && \
     CGO_ENABLED=0 go build -o /out/modbus-service ./modbus-service && \
-    CGO_ENABLED=0 go build -o /out/alert-service ./alert-service
+    CGO_ENABLED=0 go build -o /out/alert-service ./alert-service && \
+    CGO_ENABLED=0 go build -o /out/simulator-seed ./simulator
 
 FROM alpine:latest AS designer
 WORKDIR /app
@@ -36,3 +37,8 @@ FROM alpine:latest AS alert-service
 WORKDIR /app
 COPY --from=go-build /out/alert-service /app/alert-service
 ENTRYPOINT ["/app/alert-service"]
+
+FROM alpine:latest AS simulator-seed
+WORKDIR /app
+COPY --from=go-build /out/simulator-seed /app/simulator-seed
+ENTRYPOINT ["/app/simulator-seed"]

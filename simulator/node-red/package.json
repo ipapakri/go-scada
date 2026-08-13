@@ -1,0 +1,13 @@
+{
+  "name": "go-scada-node-red-simulator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node-RED process and Modbus TCP simulator for go-scada",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@flowfuse/node-red-dashboard": "1.30.2",
+    "node-red-contrib-modbus": "5.60.0"
+  }
+}

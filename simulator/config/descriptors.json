@@ -1,0 +1,208 @@
+[
+  {
+    "subject": "Modbus.SimulatorTank.config",
+    "value": {
+      "version": 1,
+      "driver": "modbus",
+      "enabled": true,
+      "config": {
+        "url": "tcp://simulator:1502",
+        "unit_id": 1,
+        "byte_order": "big",
+        "word_order": "big",
+        "timeout": "2s",
+        "poll_interval": "1s"
+      }
+    }
+  },
+  {
+    "subject": "Modbus.SimulatorPumps.config",
+    "value": {
+      "version": 1,
+      "driver": "modbus",
+      "enabled": true,
+      "config": {
+        "url": "tcp://simulator:1503",
+        "unit_id": 2,
+        "byte_order": "big",
+        "word_order": "big",
+        "timeout": "2s",
+        "poll_interval": "1s"
+      }
+    }
+  },
+  {
+    "subject": "Modbus.SimulatorUtility.config",
+    "value": {
+      "version": 1,
+      "driver": "modbus",
+      "enabled": true,
+      "config": {
+        "url": "tcp://simulator:1504",
+        "unit_id": 3,
+        "byte_order": "big",
+        "word_order": "big",
+        "timeout": "2s",
+        "poll_interval": "1s"
+      }
+    }
+  },
+  {
+    "subject": "plant.tank.level.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "float64", "enabled": true, "connection": "Modbus.SimulatorTank.config", "config": { "register": "input", "address": 0, "encoding": "float32" } }
+  },
+  {
+    "subject": "plant.tank.temperature.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "float64", "enabled": true, "connection": "Modbus.SimulatorTank.config", "config": { "register": "input", "address": 4, "encoding": "float32" } }
+  },
+  {
+    "subject": "plant.tank.pressure.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "float64", "enabled": true, "connection": "Modbus.SimulatorTank.config", "config": { "register": "input", "address": 8, "encoding": "float32" } }
+  },
+  {
+    "subject": "plant.valve.inlet.position.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "float64", "enabled": true, "connection": "Modbus.SimulatorTank.config", "config": { "register": "input", "address": 12, "encoding": "float32" } }
+  },
+  {
+    "subject": "plant.valve.outlet.position.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "float64", "enabled": true, "connection": "Modbus.SimulatorTank.config", "config": { "register": "input", "address": 16, "encoding": "float32" } }
+  },
+  {
+    "subject": "plant.tank.level_high.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "bool", "enabled": true, "connection": "Modbus.SimulatorTank.config", "config": { "register": "discrete_input", "address": 0, "encoding": "bool" } }
+  },
+  {
+    "subject": "plant.tank.level_low.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "bool", "enabled": true, "connection": "Modbus.SimulatorTank.config", "config": { "register": "discrete_input", "address": 1, "encoding": "bool" } }
+  },
+  {
+    "subject": "plant.tank.sensor_bad.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "bool", "enabled": true, "connection": "Modbus.SimulatorTank.config", "config": { "register": "discrete_input", "address": 2, "encoding": "bool" } }
+  },
+  {
+    "subject": "plant.valve.inlet.open.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "bool", "enabled": true, "connection": "Modbus.SimulatorTank.config", "config": { "register": "coil", "address": 0, "encoding": "bool" } }
+  },
+  {
+    "subject": "plant.valve.outlet.open.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "bool", "enabled": true, "connection": "Modbus.SimulatorTank.config", "config": { "register": "coil", "address": 1, "encoding": "bool" } }
+  },
+  {
+    "subject": "plant.pump1.speed.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "float64", "enabled": true, "connection": "Modbus.SimulatorPumps.config", "config": { "register": "input", "address": 0, "encoding": "float32" } }
+  },
+  {
+    "subject": "plant.pump1.current.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "float64", "enabled": true, "connection": "Modbus.SimulatorPumps.config", "config": { "register": "input", "address": 4, "encoding": "float32" } }
+  },
+  {
+    "subject": "plant.pumps.discharge_pressure.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "float64", "enabled": true, "connection": "Modbus.SimulatorPumps.config", "config": { "register": "input", "address": 8, "encoding": "float32" } }
+  },
+  {
+    "subject": "plant.pump2.speed.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "float64", "enabled": true, "connection": "Modbus.SimulatorPumps.config", "config": { "register": "input", "address": 12, "encoding": "float32" } }
+  },
+  {
+    "subject": "plant.pump2.current.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "float64", "enabled": true, "connection": "Modbus.SimulatorPumps.config", "config": { "register": "input", "address": 16, "encoding": "float32" } }
+  },
+  {
+    "subject": "plant.pumps.total_flow.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "float64", "enabled": true, "connection": "Modbus.SimulatorPumps.config", "config": { "register": "input", "address": 20, "encoding": "float32" } }
+  },
+  {
+    "subject": "plant.pumps.vibration.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "float64", "enabled": true, "connection": "Modbus.SimulatorPumps.config", "config": { "register": "input", "address": 24, "encoding": "float32" } }
+  },
+  {
+    "subject": "plant.pump1.running.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "bool", "enabled": true, "connection": "Modbus.SimulatorPumps.config", "config": { "register": "discrete_input", "address": 0, "encoding": "bool" } }
+  },
+  {
+    "subject": "plant.pump1.trip.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "bool", "enabled": true, "connection": "Modbus.SimulatorPumps.config", "config": { "register": "discrete_input", "address": 1, "encoding": "bool" } }
+  },
+  {
+    "subject": "plant.pump2.running.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "bool", "enabled": true, "connection": "Modbus.SimulatorPumps.config", "config": { "register": "discrete_input", "address": 2, "encoding": "bool" } }
+  },
+  {
+    "subject": "plant.pump2.trip.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "bool", "enabled": true, "connection": "Modbus.SimulatorPumps.config", "config": { "register": "discrete_input", "address": 3, "encoding": "bool" } }
+  },
+  {
+    "subject": "plant.utility.process_flow.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "float64", "enabled": true, "connection": "Modbus.SimulatorUtility.config", "config": { "register": "input", "address": 0, "encoding": "float32" } }
+  },
+  {
+    "subject": "plant.utility.ambient_temperature.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "float64", "enabled": true, "connection": "Modbus.SimulatorUtility.config", "config": { "register": "input", "address": 4, "encoding": "float32" } }
+  },
+  {
+    "subject": "plant.utility.conductivity.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "float64", "enabled": true, "connection": "Modbus.SimulatorUtility.config", "config": { "register": "input", "address": 8, "encoding": "float32" } }
+  },
+  {
+    "subject": "plant.valve.cooling.position.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "float64", "enabled": true, "connection": "Modbus.SimulatorUtility.config", "config": { "register": "input", "address": 12, "encoding": "float32" } }
+  },
+  {
+    "subject": "plant.utility.temperature_high.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "bool", "enabled": true, "connection": "Modbus.SimulatorUtility.config", "config": { "register": "discrete_input", "address": 0, "encoding": "bool" } }
+  },
+  {
+    "subject": "plant.utility.flow_low.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "bool", "enabled": true, "connection": "Modbus.SimulatorUtility.config", "config": { "register": "discrete_input", "address": 1, "encoding": "bool" } }
+  },
+  {
+    "subject": "plant.valve.cooling.open.address",
+    "value": { "version": 1, "driver": "modbus", "value_type": "bool", "enabled": true, "connection": "Modbus.SimulatorUtility.config", "config": { "register": "coil", "address": 0, "encoding": "bool" } }
+  },
+  {
+    "subject": "AlertProperties.Alarm",
+    "value": { "version": 1, "color": "red", "abbreviation": "ALM", "short_sign": "!", "priority": 10, "requires_acknowledgement": true }
+  },
+  {
+    "subject": "plant.tank.level_high.alert_config",
+    "value": {
+      "version": 1,
+      "enabled": true,
+      "type": "binary",
+      "binary": {
+        "bad_value": true,
+        "true": { "property": "AlertProperties.Alarm", "text": "Plant tank level is high" },
+        "false": { "text": "Plant tank level is normal" }
+      }
+    }
+  },
+  {
+    "subject": "plant.tank.temperature.alert_config",
+    "value": {
+      "version": 1,
+      "enabled": true,
+      "type": "value",
+      "value": {
+        "value_type": "float64",
+        "intervals": [
+          { "min": null, "max": 80, "active": false, "text": "Plant tank temperature is normal" },
+          { "min": 80, "max": null, "active": true, "property": "AlertProperties.Alarm", "text": "Plant tank temperature is high" }
+        ]
+      }
+    }
+  },
+  {
+    "subject": "plant.tank.alert_config",
+    "value": {
+      "version": 1,
+      "enabled": true,
+      "type": "summary",
+      "summary": {
+        "members": [
+          "plant.tank.level_high.alert",
+          "plant.tank.temperature.alert"
+        ]
+      }
+    }
+  }
+]

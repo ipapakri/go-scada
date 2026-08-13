@@ -12,47 +12,83 @@ services:
       - ./nats-data:/data
     restart: unless-stopped
 
-#  bootstrap:
-#    build:
-#      context: .
-#      target: bootstrap
-#    depends_on:
-#      - nats
-#    volumes:
-#      - ./config.docker.yaml:/app/config.yaml:ro
-#    restart: on-failure
+  bootstrap:
+    profiles: ["simulation"]
+    build:
+      context: .
+      target: bootstrap
+    depends_on:
+      - nats
+    volumes:
+      - ./config.docker.yaml:/app/config.yaml:ro
+    restart: on-failure
 
-#  modbus-service:
-#    build:
-#      context: .
-#      target: modbus-service
-#    depends_on:
-#      bootstrap:
-#        condition: service_completed_successfully
-#    volumes:
-#      - ./config.docker.yaml:/app/config.yaml:ro
-#    restart: unless-stopped
+  simulator:
+    profiles: ["simulation"]
+    build:
+      context: ./simulator/node-red
+    ports:
+      - "${SIMULATOR_DASHBOARD_PORT:-1880}:1880"
+      - "1502:1502"
+      - "1503:1503"
+      - "1504:1504"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:1880/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
 
-#  alert-service:
-#    build:
-#      context: .
-#      target: alert-service
-#    depends_on:
-#      bootstrap:
-#        condition: service_completed_successfully
-#    volumes:
-#      - ./config.docker.yaml:/app/config.yaml:ro
-#    restart: unless-stopped
+  simulator-seed:
+    profiles: ["simulation"]
+    build:
+      context: .
+      target: simulator-seed
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    volumes:
+      - ./config.docker.yaml:/app/config.yaml:ro
+    restart: on-failure
+
+  modbus-service:
+    profiles: ["simulation"]
+    build:
+      context: .
+      target: modbus-service
+    depends_on:
+      simulator:
+        condition: service_healthy
+      simulator-seed:
+        condition: service_completed_successfully
+    volumes:
+      - ./config.docker.yaml:/app/config.yaml:ro
+    restart: unless-stopped
+
+  alert-service:
+    profiles: ["simulation"]
+    build:
+      context: .
+      target: alert-service
+    depends_on:
+      simulator-seed:
+        condition: service_completed_successfully
+    volumes:
+      - ./config.docker.yaml:/app/config.yaml:ro
+    restart: unless-stopped
 
   designer:
     build:
       context: .
       target: designer
-#    depends_on:
-#      bootstrap:
-#        condition: service_completed_successfully
     ports:
       - "8080:8080"
+    depends_on:
+      - nats
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro
     restart: unless-stopped

@@ -37,14 +37,28 @@ The default stream settings are in `config.yaml`. To use another file:
 go run ./designer-service -config /path/to/config.yaml
 ```
 
-### Run the complete stack
+### Run the web stack
 
 ```sh
 docker compose up --build
 ```
 
-Open `http://localhost:8080`. Compose provisions the stream, starts the Modbus
-poller, and serves the compiled designer from the Go service.
+This starts NATS and serves the compiled designer at `http://localhost:8080`.
+
+### Run with the Node-RED Modbus simulator
+
+The simulation profile adds stream bootstrap, three Node-RED Modbus TCP
+servers, automatic descriptor seeding, the Modbus poller, and the alert service:
+
+```sh
+make simulator-up
+```
+
+Open the process dashboard at `http://localhost:1880/dashboard/plant` and the
+SCADA designer at `http://localhost:8080`. The simulated tank, pumps, valves,
+and analog sensors are available on host ports 1502 through 1504. See
+`simulator/README.md` for the register map, controls, fault scenarios, and
+verification commands.
 
 ### Configuration behavior
 
