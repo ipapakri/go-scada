@@ -24,6 +24,7 @@ import {
   type Encoding,
   type Register,
 } from './models'
+import { listPlants, OPERATOR_PLANT_ID, plantAddresses, plantAlerts } from './plant'
 import { useLiveAlerts } from './useLiveAlerts'
 import { useLiveValues } from './useLiveValues'
 
@@ -409,8 +410,28 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState<unknown>(null)
-  const { values, status: liveStatus } = useLiveValues(addresses)
-  const { states: liveAlertStates, status: alarmLiveStatus } = useLiveAlerts(alerts)
+  const [selectedPlantId, setSelectedPlantId] = useState(OPERATOR_PLANT_ID)
+  const plants = useMemo(() => listPlants(addresses), [addresses])
+  const scopedAddresses = useMemo(
+    () => plantAddresses(addresses, selectedPlantId),
+    [addresses, selectedPlantId],
+  )
+  const scopedAlerts = useMemo(
+    () => plantAlerts(alerts, selectedPlantId),
+    [alerts, selectedPlantId],
+  )
+  const { values, status: liveStatus } = useLiveValues(
+    activeView === 'addresses' ? addresses : scopedAddresses,
+  )
+  const { states: liveAlertStates, status: alarmLiveStatus } = useLiveAlerts(
+    activeView === 'alarms' ? alerts : scopedAlerts,
+  )
+
+  useEffect(() => {
+    if (plants.length > 0 && !plants.includes(selectedPlantId)) {
+      setSelectedPlantId(plants[0])
+    }
+  }, [plants, selectedPlantId])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -735,6 +756,8 @@ function App() {
                 values={values}
                 alerts={alerts}
                 liveStates={liveAlertStates}
+                selectedPlantId={selectedPlantId}
+                onSelectPlant={setSelectedPlantId}
                 onAcknowledge={acknowledgeAlert}
               />
             ) : activeView === 'alarms' ? (

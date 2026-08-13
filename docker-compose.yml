@@ -1,5 +1,6 @@
 services:
   nats:
+    profiles: ["run"]
     image: nats:latest
     command:
       - "--jetstream"
@@ -13,7 +14,7 @@ services:
     restart: unless-stopped
 
   bootstrap:
-    profiles: ["simulation"]
+    profiles: ["run"]
     build:
       context: .
       target: bootstrap
@@ -48,40 +49,31 @@ services:
     build:
       context: .
       target: simulator-seed
-    depends_on:
-      bootstrap:
-        condition: service_completed_successfully
+    command: ["-replicas", "${SIMULATOR_REPLICAS:-100}"]
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro
     restart: on-failure
 
   modbus-service:
-    profiles: ["simulation"]
+    profiles: ["run"]
     build:
       context: .
       target: modbus-service
-    depends_on:
-      simulator:
-        condition: service_healthy
-      simulator-seed:
-        condition: service_completed_successfully
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro
     restart: unless-stopped
 
   alert-service:
-    profiles: ["simulation"]
+    profiles: ["run"]
     build:
       context: .
       target: alert-service
-    depends_on:
-      simulator-seed:
-        condition: service_completed_successfully
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro
     restart: unless-stopped
 
   designer:
+    profiles: ["run"]
     build:
       context: .
       target: designer

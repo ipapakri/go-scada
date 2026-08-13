@@ -5,8 +5,10 @@ import {
   alertStatus,
   clampPercent,
   formatNumber,
-  plantAddresses,
+  listPlants,
   plantAlerts,
+  plantLabel,
+  plantTelemetry,
   readBool,
   readNumber,
 } from './plant'
@@ -16,6 +18,8 @@ interface PlantViewProps {
   values: Record<string, LiveEvent>
   alerts: AlertRecord[]
   liveStates: Record<string, AlertState>
+  selectedPlantId: string
+  onSelectPlant: (plantId: string) => void
   onAcknowledge: (subject: string) => Promise<void>
 }
 
@@ -125,61 +129,65 @@ export function PlantView({
   values,
   alerts,
   liveStates,
+  selectedPlantId,
+  onSelectPlant,
   onAcknowledge,
 }: PlantViewProps) {
   const [busy, setBusy] = useState('')
   const [error, setError] = useState<unknown>(null)
-  const hasPlant = plantAddresses(addresses).length > 0
-  const configuredAlerts = plantAlerts(alerts)
+  const plants = useMemo(() => listPlants(addresses), [addresses])
+  const hasPlant = plants.length > 0
+  const configuredAlerts = plantAlerts(alerts, selectedPlantId)
+  const point = (path: string) => plantTelemetry(selectedPlantId, path)
 
   const tank = {
-    level: readNumber(values, 'plant.tank.level'),
-    temperature: readNumber(values, 'plant.tank.temperature'),
-    pressure: readNumber(values, 'plant.tank.pressure'),
-    high: readBool(values, 'plant.tank.level_high'),
-    low: readBool(values, 'plant.tank.level_low'),
-    sensorBad: readBool(values, 'plant.tank.sensor_bad'),
+    level: readNumber(values, point('tank.level')),
+    temperature: readNumber(values, point('tank.temperature')),
+    pressure: readNumber(values, point('tank.pressure')),
+    high: readBool(values, point('tank.level_high')),
+    low: readBool(values, point('tank.level_low')),
+    sensorBad: readBool(values, point('tank.sensor_bad')),
   }
   const inlet = {
-    open: readBool(values, 'plant.valve.inlet.open'),
-    position: readNumber(values, 'plant.valve.inlet.position'),
+    open: readBool(values, point('valve.inlet.open')),
+    position: readNumber(values, point('valve.inlet.position')),
   }
   const outlet = {
-    open: readBool(values, 'plant.valve.outlet.open'),
-    position: readNumber(values, 'plant.valve.outlet.position'),
+    open: readBool(values, point('valve.outlet.open')),
+    position: readNumber(values, point('valve.outlet.position')),
   }
   const cooling = {
-    open: readBool(values, 'plant.valve.cooling.open'),
-    position: readNumber(values, 'plant.valve.cooling.position'),
+    open: readBool(values, point('valve.cooling.open')),
+    position: readNumber(values, point('valve.cooling.position')),
   }
   const pump1 = {
-    running: readBool(values, 'plant.pump1.running'),
-    trip: readBool(values, 'plant.pump1.trip'),
-    speed: readNumber(values, 'plant.pump1.speed'),
-    current: readNumber(values, 'plant.pump1.current'),
+    running: readBool(values, point('pump1.running')),
+    trip: readBool(values, point('pump1.trip')),
+    speed: readNumber(values, point('pump1.speed')),
+    current: readNumber(values, point('pump1.current')),
   }
   const pump2 = {
-    running: readBool(values, 'plant.pump2.running'),
-    trip: readBool(values, 'plant.pump2.trip'),
-    speed: readNumber(values, 'plant.pump2.speed'),
-    current: readNumber(values, 'plant.pump2.current'),
+    running: readBool(values, point('pump2.running')),
+    trip: readBool(values, point('pump2.trip')),
+    speed: readNumber(values, point('pump2.speed')),
+    current: readNumber(values, point('pump2.current')),
   }
   const pumps = {
-    pressure: readNumber(values, 'plant.pumps.discharge_pressure'),
-    flow: readNumber(values, 'plant.pumps.total_flow'),
-    vibration: readNumber(values, 'plant.pumps.vibration'),
+    pressure: readNumber(values, point('pumps.discharge_pressure')),
+    flow: readNumber(values, point('pumps.total_flow')),
+    vibration: readNumber(values, point('pumps.vibration')),
   }
   const utility = {
-    flow: readNumber(values, 'plant.utility.process_flow'),
-    ambient: readNumber(values, 'plant.utility.ambient_temperature'),
-    conductivity: readNumber(values, 'plant.utility.conductivity'),
-    temperatureHigh: readBool(values, 'plant.utility.temperature_high'),
-    flowLow: readBool(values, 'plant.utility.flow_low'),
+    flow: readNumber(values, point('utility.process_flow')),
+    ambient: readNumber(values, point('utility.ambient_temperature')),
+    conductivity: readNumber(values, point('utility.conductivity')),
+    temperatureHigh: readBool(values, point('utility.temperature_high')),
+    flowLow: readBool(values, point('utility.flow_low')),
   }
 
-  const tankLevelAlert = liveStates['plant.tank.level_high.alert']
-  const tankTempAlert = liveStates['plant.tank.temperature.alert']
-  const tankSummary = liveStates['plant.tank.alert']
+  const tankLevelAlert = liveStates[`${point('tank.level_high')}.alert`]
+  const tankTempAlert = liveStates[`${point('tank.temperature')}.alert`]
+  const tankSummary = liveStates[`${point('tank')}.alert`]
   const tankAlarm = alertStatus(tankSummary) === 'active' ||
     alertStatus(tankLevelAlert) === 'active' ||
     alertStatus(tankTempAlert) === 'active'
@@ -216,6 +224,27 @@ export function PlantView({
 
   return (
     <section className="plant-view" aria-label="Plant overview">
+      <div className="plant-toolbar">
+        <div>
+          <strong>{plantLabel(selectedPlantId)}</strong>
+          <span>{plants.length} plant{plants.length === 1 ? '' : 's'} available</span>
+        </div>
+        <label className="plant-picker">
+          Plant
+          <select
+            aria-label="Plant"
+            value={selectedPlantId}
+            onChange={(event) => onSelectPlant(event.target.value)}
+          >
+            {plants.map((plantId) => (
+              <option key={plantId || 'operator'} value={plantId}>
+                {plantLabel(plantId)}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
       {Boolean(error) && (
         <div className="page-error" role="alert">
           <span>{errorMessage(error)}</span>

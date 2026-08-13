@@ -29,15 +29,24 @@ func main() {
 		stream.DefaultConfigPath,
 		"stream configuration file",
 	)
+	replicas := flag.Int(
+		"replicas",
+		100,
+		"identical plant copies to seed alongside the operator plant",
+	)
 	flag.Parse()
 
 	data, err := descriptorFiles.ReadFile("config/descriptors.json")
 	if err != nil {
 		log.Fatalf("read simulator descriptors: %v", err)
 	}
-	entries, err := parseManifest(data)
+	template, err := parseManifest(data)
 	if err != nil {
 		log.Fatalf("validate simulator descriptors: %v", err)
+	}
+	entries, err := expandReplicas(template, *replicas)
+	if err != nil {
+		log.Fatalf("expand simulator replicas: %v", err)
 	}
 
 	client, err := stream.New(*configPath)
@@ -51,7 +60,11 @@ func main() {
 			log.Fatalf("seed %s: %v", entry.Subject, err)
 		}
 	}
-	log.Printf("seeded %d simulator descriptors", len(entries))
+	log.Printf(
+		"seeded %d simulator descriptors (%d plant replicas)",
+		len(entries),
+		*replicas,
+	)
 }
 
 func parseManifest(data []byte) ([]manifestEntry, error) {
@@ -68,32 +81,38 @@ func parseManifest(data []byte) ([]manifestEntry, error) {
 		}
 		return nil, fmt.Errorf("finish manifest: %w", err)
 	}
+	if err := validateManifest(entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
 
+func validateManifest(entries []manifestEntry) error {
 	subjects := make(map[string]struct{}, len(entries))
 	connections := make(map[string]modbus.Connection)
 	for index, entry := range entries {
 		entry.Subject = strings.TrimSpace(entry.Subject)
 		entries[index].Subject = entry.Subject
 		if entry.Subject == "" {
-			return nil, fmt.Errorf("entry %d has an empty subject", index)
+			return fmt.Errorf("entry %d has an empty subject", index)
 		}
 		if _, exists := subjects[entry.Subject]; exists {
-			return nil, fmt.Errorf("duplicate subject %q", entry.Subject)
+			return fmt.Errorf("duplicate subject %q", entry.Subject)
 		}
 		subjects[entry.Subject] = struct{}{}
 		if len(bytes.TrimSpace(entry.Value)) == 0 || !json.Valid(entry.Value) {
-			return nil, fmt.Errorf("subject %q has invalid JSON", entry.Subject)
+			return fmt.Errorf("subject %q has invalid JSON", entry.Subject)
 		}
 		if !strings.HasSuffix(entry.Subject, ".config") {
 			continue
 		}
 		envelope, err := address.ParseConnection(string(entry.Value))
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", entry.Subject, err)
+			return fmt.Errorf("%s: %w", entry.Subject, err)
 		}
 		connection, err := modbus.ParseConnection(envelope)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", entry.Subject, err)
+			return fmt.Errorf("%s: %w", entry.Subject, err)
 		}
 		connections[entry.Subject] = connection
 	}
@@ -104,19 +123,19 @@ func parseManifest(data []byte) ([]manifestEntry, error) {
 		}
 		envelope, err := address.Parse(string(entry.Value))
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", entry.Subject, err)
+			return fmt.Errorf("%s: %w", entry.Subject, err)
 		}
 		connection, exists := connections[envelope.Connection]
 		if !exists {
-			return nil, fmt.Errorf(
+			return fmt.Errorf(
 				"%s references unknown connection %q",
 				entry.Subject,
 				envelope.Connection,
 			)
 		}
 		if _, err := modbus.ParsePoint(envelope, connection); err != nil {
-			return nil, fmt.Errorf("%s: %w", entry.Subject, err)
+			return fmt.Errorf("%s: %w", entry.Subject, err)
 		}
 	}
-	return entries, nil
+	return nil
 }

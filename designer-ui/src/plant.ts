@@ -1,17 +1,55 @@
 import type { Address, AlertRecord, AlertState, LiveEvent } from './models'
 
-export const PLANT_PREFIX = 'plant.'
+export const OPERATOR_PLANT_ID = ''
+
+const plantEquipment = 'tank|valve|pump1|pump2|pumps|utility'
+const operatorPlantPattern = new RegExp(`^plant\\.(${plantEquipment})[.]`)
+const replicaPlantPattern = new RegExp(`^plant\\.(\\d{3})\\.(${plantEquipment})[.]`)
+
+export function plantIdFromSubject(subject: string) {
+  const replica = subject.match(replicaPlantPattern)
+  if (replica) return replica[1]
+  if (operatorPlantPattern.test(subject)) return OPERATOR_PLANT_ID
+  return undefined
+}
 
 export function isPlantSubject(subject: string) {
-  return subject.startsWith(PLANT_PREFIX)
+  return plantIdFromSubject(subject) !== undefined
 }
 
-export function plantAddresses(addresses: Address[]) {
-  return addresses.filter((item) => isPlantSubject(item.subject))
+export function listPlants(addresses: Address[]) {
+  const plants = new Set<string>()
+  for (const item of addresses) {
+    const plantId = plantIdFromSubject(item.subject)
+    if (plantId !== undefined) plants.add(plantId)
+  }
+  return [...plants].sort((left, right) => {
+    if (left === OPERATOR_PLANT_ID) return -1
+    if (right === OPERATOR_PLANT_ID) return 1
+    return left.localeCompare(right)
+  })
 }
 
-export function plantAlerts(alerts: AlertRecord[]) {
-  return alerts.filter((item) => isPlantSubject(item.subject))
+export function plantLabel(plantId: string) {
+  return plantId === OPERATOR_PLANT_ID ? 'Operator plant' : `Plant ${plantId}`
+}
+
+export function plantTelemetry(plantId: string, path: string) {
+  return plantId ? `plant.${plantId}.${path}` : `plant.${path}`
+}
+
+export function plantAddresses(addresses: Address[], plantId?: string) {
+  return addresses.filter((item) => {
+    const id = plantIdFromSubject(item.subject)
+    return id !== undefined && (plantId === undefined || id === plantId)
+  })
+}
+
+export function plantAlerts(alerts: AlertRecord[], plantId?: string) {
+  return alerts.filter((item) => {
+    const id = plantIdFromSubject(item.subject)
+    return id !== undefined && (plantId === undefined || id === plantId)
+  })
 }
 
 export function addressKey(telemetrySubject: string) {

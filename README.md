@@ -59,8 +59,11 @@ SCADA designer at `http://localhost:8080`. The designer **Plant** tab shows live
 tank, pump, valve, and utility values plus alarms. The browser talks only to the
 Go gateway WebSocket; NATS is never exposed to frontend code. The simulated
 tank, pumps, valves, and analog sensors are available on host ports 1502 through
-1504. See `simulator/README.md` for the register map, controls, fault scenarios,
-and verification commands.
+1504. Seeding also publishes 100 identical `plant.NNN.*` copies that reuse the
+original three Modbus connections so the poller and alert service can be
+load-tested. Set
+`SIMULATOR_REPLICAS=0` to disable that. See `simulator/README.md` for the
+register map, controls, fault scenarios, and verification commands.
 
 ### Configuration behavior
 

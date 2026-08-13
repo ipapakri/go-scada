@@ -33,7 +33,11 @@ make simulator-down
 
 The `simulation` Compose profile starts NATS, stream bootstrap, descriptor
 seeding, Node-RED, the Modbus poller, the alert service, and the designer.
-Descriptor seeding is idempotent and runs each time the profile starts.
+Descriptor seeding is idempotent and runs each time the profile starts. By
+default it also stamps 100 identical plant copies (`plant.001` … `plant.100`)
+that reuse the original three Modbus connections, for load on the poller, alert
+service, and stream. Override with `SIMULATOR_REPLICAS=0 make simulator-up`
+to seed only the operator plant.
 
 ## Simulated controllers
 
@@ -114,6 +118,8 @@ go run ./scada-cli get -type float64 plant.tank.level
 go run ./scada-cli get -type bool plant.pump1.running
 go run ./scada-cli get -type float64 plant.utility.conductivity
 go run ./scada-cli get plant.tank.temperature.alert
+go run ./scada-cli get -type float64 plant.001.tank.level
+go run ./scada-cli get plant.100.tank.alert
 ```
 
 To inspect service status and logs:
