@@ -239,8 +239,8 @@
       "value": {
         "value_type": "float64",
         "intervals": [
-          { "min": null, "max": 0, "active": true, "text": "Inlet valve is closed (0%)" },
-          { "min": 0, "max": null, "active": false, "property": "AlertProperties.Alarm", "text": "Inlet valve is open" }
+          { "min": null, "max": 0, "active": true, "property": "AlertProperties.Alarm", "text": "Inlet valve is closed (0%)" },
+          { "min": 0, "max": null, "active": false, "text": "Inlet valve is open" }
         ]
       }
     }
@@ -254,8 +254,8 @@
       "value": {
         "value_type": "float64",
         "intervals": [
-          { "min": null, "max": 0, "active": true, "text": "Outlet valve is closed (0%)" },
-          { "min": 0, "max": null, "active": false, "property": "AlertProperties.Alarm", "text": "Outlet valve is open" }
+          { "min": null, "max": 0, "active": true, "property": "AlertProperties.Alarm", "text": "Outlet valve is closed (0%)" },
+          { "min": 0, "max": null, "active": false, "text": "Outlet valve is open" }
         ]
       }
     }
