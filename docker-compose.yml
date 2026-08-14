@@ -1,6 +1,5 @@
 services:
   nats:
-    profiles: ["run"]
     image: nats:latest
     command:
       - "--jetstream"
