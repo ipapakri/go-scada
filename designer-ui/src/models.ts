@@ -41,6 +41,7 @@ export interface Address {
   value_type: ValueType
   enabled: boolean
   connection: string
+  publish_on_change: boolean
   config: AddressConfig
   telemetry_subject: string
 }
@@ -194,6 +195,7 @@ export const emptyAddress = (connection = ''): Address => ({
   value_type: 'int64',
   enabled: true,
   connection,
+  publish_on_change: false,
   config: { register: 'holding', address: 0, encoding: 'uint16' },
   telemetry_subject: '',
 })

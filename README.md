@@ -72,6 +72,9 @@ register map, controls, fault scenarios, and verification commands.
 - Address subjects end in `.address`, for example
   `line1.temperature.address`.
 - The address above publishes telemetry on `line1.temperature`.
+- Set `publish_on_change` on an address to skip republishing when the
+  hardware value is unchanged. That avoids retriggering alerts and other
+  subscribers. Omit the field or set it to `false` to publish every poll.
 - Deleting or renaming in the designer is a soft delete: the previous
   descriptor is republished with `enabled: false`. This guarantees that the
   running Modbus service observes the change.

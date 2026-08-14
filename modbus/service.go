@@ -73,6 +73,9 @@ type Service struct {
 	connections map[string]connectionDefinition
 	workers     map[string]*worker
 	clients     map[string]*managedClient
+
+	lastMu        sync.Mutex
+	lastPublished map[string]any
 }
 
 // NewService wires a Modbus polling service to the shared stream.
@@ -98,14 +101,15 @@ func newService(
 	logger *log.Logger,
 ) *Service {
 	return &Service{
-		source:      source,
-		publisher:   publisher,
-		factory:     factory,
-		logger:      logger,
-		points:      make(map[string]pointDefinition),
-		connections: make(map[string]connectionDefinition),
-		workers:     make(map[string]*worker),
-		clients:     make(map[string]*managedClient),
+		source:        source,
+		publisher:     publisher,
+		factory:       factory,
+		logger:        logger,
+		points:        make(map[string]pointDefinition),
+		connections:   make(map[string]connectionDefinition),
+		workers:       make(map[string]*worker),
+		clients:       make(map[string]*managedClient),
+		lastPublished: make(map[string]any),
 	}
 }
 
@@ -316,6 +320,9 @@ func (service *Service) removePoint(subject string) {
 	definition, exists := service.points[subject]
 	delete(service.points, subject)
 	service.mu.Unlock()
+	if target, ok := targetSubject(subject); ok {
+		service.forgetPublished(target)
+	}
 	if exists && service.started {
 		service.restartConnection(definition.descriptor.Connection)
 	}
@@ -350,7 +357,11 @@ func (service *Service) connectionPointsLocked(
 			service.logger.Printf("Ignoring address with invalid subject %s", subject)
 			continue
 		}
-		points = append(points, pollPoint{subject: target, point: point})
+		points = append(points, pollPoint{
+			subject:         target,
+			point:           point,
+			publishOnChange: definition.descriptor.PublishOnChange,
+		})
 	}
 	return points
 }
@@ -389,6 +400,7 @@ func (service *Service) poll(
 						point.subject,
 						point.point.ValueType,
 						values[index],
+						point.publishOnChange,
 					); err != nil {
 						service.logger.Printf(
 							"Publish Modbus point %s failed: %v",
@@ -404,6 +416,22 @@ func (service *Service) poll(
 }
 
 func (service *Service) publish(
+	subject string,
+	valueType address.ValueType,
+	value any,
+	publishOnChange bool,
+) error {
+	if publishOnChange && service.sameAsLast(subject, value) {
+		return nil
+	}
+	if err := service.publishValue(subject, valueType, value); err != nil {
+		return err
+	}
+	service.rememberPublished(subject, value)
+	return nil
+}
+
+func (service *Service) publishValue(
 	subject string,
 	valueType address.ValueType,
 	value any,
@@ -430,6 +458,25 @@ func (service *Service) publish(
 	default:
 		return fmt.Errorf("unsupported Modbus value type %q", valueType)
 	}
+}
+
+func (service *Service) sameAsLast(subject string, value any) bool {
+	service.lastMu.Lock()
+	defer service.lastMu.Unlock()
+	last, ok := service.lastPublished[subject]
+	return ok && last == value
+}
+
+func (service *Service) rememberPublished(subject string, value any) {
+	service.lastMu.Lock()
+	defer service.lastMu.Unlock()
+	service.lastPublished[subject] = value
+}
+
+func (service *Service) forgetPublished(subject string) {
+	service.lastMu.Lock()
+	defer service.lastMu.Unlock()
+	delete(service.lastPublished, subject)
 }
 
 func (service *Service) clientFor(

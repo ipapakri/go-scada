@@ -10,12 +10,13 @@ func TestDescriptorRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	original := Descriptor{
-		Version:    CurrentVersion,
-		Driver:     "modbus",
-		ValueType:  ValueTypeFloat64,
-		Enabled:    true,
-		Connection: "Modbus.Modbus1.config",
-		Config:     json.RawMessage(`{"url":"tcp://127.0.0.1:502"}`),
+		Version:         CurrentVersion,
+		Driver:          "modbus",
+		ValueType:       ValueTypeFloat64,
+		Enabled:         true,
+		Connection:      "Modbus.Modbus1.config",
+		PublishOnChange: true,
+		Config:          json.RawMessage(`{"url":"tcp://127.0.0.1:502"}`),
 	}
 	value, err := Marshal(original)
 	if err != nil {
@@ -30,8 +31,35 @@ func TestDescriptorRoundTrip(t *testing.T) {
 		decoded.ValueType != original.ValueType ||
 		decoded.Enabled != original.Enabled ||
 		decoded.Connection != original.Connection ||
+		decoded.PublishOnChange != original.PublishOnChange ||
 		string(decoded.Config) != string(original.Config) {
 		t.Fatalf("round trip mismatch: got %+v, want %+v", decoded, original)
+	}
+}
+
+func TestDescriptorOmitsPublishOnChangeByDefault(t *testing.T) {
+	t.Parallel()
+
+	decoded, err := Parse(`{
+		"version":1,
+		"driver":"modbus",
+		"value_type":"bool",
+		"enabled":true,
+		"connection":"c.config",
+		"config":{}
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.PublishOnChange {
+		t.Fatal("omitted publish_on_change should default to false")
+	}
+	encoded, err := Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(encoded, "publish_on_change") {
+		t.Fatalf("false publish_on_change should be omitted, got %s", encoded)
 	}
 }
 

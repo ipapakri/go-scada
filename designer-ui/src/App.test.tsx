@@ -133,6 +133,7 @@ describe('Modbus Designer', () => {
     expect(within(encodingSelect).getAllByRole('option')).toHaveLength(1)
     expect(encodingSelect).toHaveValue('bool')
     expect(screen.getByText('Value type').parentElement).toHaveTextContent('bool')
+    expect(screen.getByLabelText('Publish only when value changes')).not.toBeChecked()
 
     await user.type(
       screen.getByPlaceholderText('plant.line1.temperature.address'),

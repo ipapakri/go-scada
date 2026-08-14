@@ -137,6 +137,38 @@ func TestConnectionAndAddressLifecycle(t *testing.T) {
 	if created.TelemetrySubject != "line1.temperature" {
 		t.Fatalf("telemetry subject = %q", created.TelemetrySubject)
 	}
+	if created.PublishOnChange {
+		t.Fatal("omitted publish_on_change should default to false")
+	}
+
+	created.PublishOnChange = true
+	updatedBody, err := json.Marshal(created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = performRequest(
+		server.Handler(),
+		http.MethodPut,
+		"/api/addresses/line1.temperature.address",
+		string(updatedBody),
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("update address status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var updated AddressRecord
+	if err := json.Unmarshal(response.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if !updated.PublishOnChange {
+		t.Fatal("updated address did not keep publish_on_change")
+	}
+	stored, err := address.Parse(store.values["line1.temperature.address"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.PublishOnChange {
+		t.Fatal("stored address descriptor is missing publish_on_change")
+	}
 
 	response = performRequest(
 		server.Handler(),

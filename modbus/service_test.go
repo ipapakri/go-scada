@@ -262,6 +262,64 @@ func TestServiceReadsGroupedAddressesOnce(t *testing.T) {
 	}
 }
 
+func TestServiceSkipsUnchangedValuesWhenConfigured(t *testing.T) {
+	source := newFakeConfigurationSource()
+	connectionSubject := "Modbus.Modbus1.config"
+	source.values[connectionSubject] =
+		connectionDescriptorJSON(t, true, "modbus", "tcp://first:502")
+	source.values["sensor1.value.address"] = pointDescriptorJSONOnChange(
+		t, true, connectionSubject, true,
+	)
+	factory := &fakeClientFactory{}
+	publisher := &fakePublisher{
+		bools:  make(chan publishedValue[bool], 10),
+		ints:   make(chan publishedValue[int64], 10),
+		floats: make(chan publishedValue[float64], 10),
+	}
+	service := newService(
+		source,
+		publisher,
+		factory,
+		log.New(io.Discard, "", 0),
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- service.Run(ctx) }()
+	source.waitSubscribed(t)
+
+	first := receiveWithin(t, publisher.floats)
+	if first.subject != "sensor1.value" || first.value != 12.5 {
+		t.Fatalf("first publication = %+v", first)
+	}
+	drain(publisher.floats)
+	select {
+	case value := <-publisher.floats:
+		t.Fatalf("repeated publication of unchanged value: %+v", value)
+	case <-time.After(40 * time.Millisecond):
+	}
+
+	source.emit(
+		t,
+		connectionSubject,
+		connectionDescriptorJSON(t, true, "modbus", "tcp://second:502"),
+	)
+	changed := receiveWithin(t, publisher.floats)
+	if changed.subject != "sensor1.value" || changed.value != 13.5 {
+		t.Fatalf("changed publication = %+v", changed)
+	}
+	drain(publisher.floats)
+	select {
+	case value := <-publisher.floats:
+		t.Fatalf("repeated publication after change: %+v", value)
+	case <-time.After(40 * time.Millisecond):
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 type fakeConfigurationSource struct {
 	mu         sync.Mutex
 	values     map[string]string
@@ -521,12 +579,34 @@ func pointDescriptorJSONAt(
 	addressOffset uint16,
 ) string {
 	t.Helper()
+	return marshalPointDescriptor(t, enabled, connection, addressOffset, false)
+}
+
+func pointDescriptorJSONOnChange(
+	t *testing.T,
+	enabled bool,
+	connection string,
+	publishOnChange bool,
+) string {
+	t.Helper()
+	return marshalPointDescriptor(t, enabled, connection, 0, publishOnChange)
+}
+
+func marshalPointDescriptor(
+	t *testing.T,
+	enabled bool,
+	connection string,
+	addressOffset uint16,
+	publishOnChange bool,
+) string {
+	t.Helper()
 	value, err := address.Marshal(address.Descriptor{
-		Version:    address.CurrentVersion,
-		Driver:     "modbus",
-		ValueType:  address.ValueTypeFloat64,
-		Enabled:    enabled,
-		Connection: connection,
+		Version:         address.CurrentVersion,
+		Driver:          "modbus",
+		ValueType:       address.ValueTypeFloat64,
+		Enabled:         enabled,
+		Connection:      connection,
+		PublishOnChange: publishOnChange,
 		Config: []byte(fmt.Sprintf(`{
 			"register":"holding",
 			"address":%d,
