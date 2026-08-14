@@ -23,6 +23,7 @@ const tankLevel: Address = {
   value_type: 'float64',
   enabled: true,
   connection: 'Modbus.SimulatorTank.config',
+  publish_on_change: false,
   config: { register: 'input', address: 0, encoding: 'float32' },
   telemetry_subject: 'plant.tank.level',
 }

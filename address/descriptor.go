@@ -25,12 +25,13 @@ const (
 // Descriptor is the stable envelope stored in a .address subject.
 // Config is interpreted by the driver named in Driver.
 type Descriptor struct {
-	Version    int             `json:"version"`
-	Driver     string          `json:"driver"`
-	ValueType  ValueType       `json:"value_type"`
-	Enabled    bool            `json:"enabled"`
-	Connection string          `json:"connection"`
-	Config     json.RawMessage `json:"config"`
+	Version         int             `json:"version"`
+	Driver          string          `json:"driver"`
+	ValueType       ValueType       `json:"value_type"`
+	Enabled         bool            `json:"enabled"`
+	Connection      string          `json:"connection"`
+	PublishOnChange bool            `json:"publish_on_change,omitempty"`
+	Config          json.RawMessage `json:"config"`
 }
 
 // Connection is the stable envelope stored in a .config subject.

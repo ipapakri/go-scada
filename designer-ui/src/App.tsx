@@ -357,6 +357,21 @@ function AddressForm({
         </label>
       </div>
 
+      <label className="switch-label">
+        <input
+          type="checkbox"
+          checked={item.publish_on_change}
+          onChange={(event) =>
+            setItem({ ...item, publish_on_change: event.target.checked })
+          }
+        />
+        Publish only when value changes
+      </label>
+      <small>
+        Unchanged hardware values are not published, so alerts and other
+        subscribers are not retriggered.
+      </small>
+
       <div className="derived">
         <div>
           <span>Value type</span>

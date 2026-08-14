@@ -9,8 +9,9 @@ const (
 )
 
 type pollPoint struct {
-	subject string
-	point   Point
+	subject         string
+	point           Point
+	publishOnChange bool
 }
 
 type pollGroup struct {

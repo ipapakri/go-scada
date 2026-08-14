@@ -32,6 +32,7 @@ type AddressRecord struct {
 	ValueType        address.ValueType    `json:"value_type"`
 	Enabled          bool                 `json:"enabled"`
 	Connection       string               `json:"connection"`
+	PublishOnChange  bool                 `json:"publish_on_change"`
 	Config           modbus.AddressConfig `json:"config"`
 	TelemetrySubject string               `json:"telemetry_subject"`
 }
@@ -320,8 +321,8 @@ func (server *Server) loadAddress(subject string) (AddressRecord, error) {
 	return AddressRecord{
 		Subject: subject, Version: descriptor.Version, Driver: descriptor.Driver,
 		ValueType: descriptor.ValueType, Enabled: descriptor.Enabled,
-		Connection: descriptor.Connection, Config: config,
-		TelemetrySubject: strings.TrimSuffix(subject, ".address"),
+		Connection: descriptor.Connection, PublishOnChange: descriptor.PublishOnChange,
+		Config: config, TelemetrySubject: strings.TrimSuffix(subject, ".address"),
 	}, nil
 }
 
@@ -386,7 +387,8 @@ func validateAddress(item AddressRecord) (string, AddressRecord, error) {
 	}
 	descriptor := address.Descriptor{
 		Version: item.Version, Driver: item.Driver, ValueType: item.ValueType,
-		Enabled: item.Enabled, Connection: item.Connection, Config: config,
+		Enabled: item.Enabled, Connection: item.Connection,
+		PublishOnChange: item.PublishOnChange, Config: config,
 	}
 	raw, err := address.Marshal(descriptor)
 	if err != nil {
