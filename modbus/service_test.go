@@ -3,6 +3,7 @@ package modbus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math"
@@ -187,24 +188,77 @@ func TestManagedClientReconnectsAfterReadFailure(t *testing.T) {
 			Timeout: time.Second,
 		},
 	}
-	point := Point{
-		Register:  RegisterHoldingRegister,
-		Encoding:  EncodingUint16,
-		ByteOrder: OrderBig,
-		WordOrder: OrderBig,
+	group := pollGroup{
+		register: RegisterHoldingRegister,
+		address:  0,
+		quantity: 1,
+		points: []pollPoint{{
+			point: Point{
+				Register:  RegisterHoldingRegister,
+				Encoding:  EncodingUint16,
+				ByteOrder: OrderBig,
+				WordOrder: OrderBig,
+			},
+		}},
 	}
-	if _, err := client.read(point); err == nil {
+	if _, err := client.readGroup(group); err == nil {
 		t.Fatal("first read succeeded, want transient failure")
 	}
-	value, err := client.read(point)
+	values, err := client.readGroup(group)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value != int64(42) {
-		t.Fatalf("retried value = %v, want 42", value)
+	if len(values) != 1 || values[0] != int64(42) {
+		t.Fatalf("retried value = %v, want [42]", values)
 	}
 	if factory.opens.Load() != 2 {
 		t.Fatalf("client opens = %d, want 2", factory.opens.Load())
+	}
+}
+
+func TestServiceReadsGroupedAddressesOnce(t *testing.T) {
+	source := newFakeConfigurationSource()
+	connectionSubject := "Modbus.Modbus1.config"
+	source.values[connectionSubject] =
+		connectionDescriptorJSON(t, true, "modbus", "tcp://first:502")
+	source.values["sensor1.value.address"] = pointDescriptorJSONAt(
+		t, true, connectionSubject, 0,
+	)
+	source.values["sensor2.value.address"] = pointDescriptorJSONAt(
+		t, true, connectionSubject, 4,
+	)
+	factory := &recordingClientFactory{}
+	publisher := &fakePublisher{
+		bools:  make(chan publishedValue[bool], 10),
+		ints:   make(chan publishedValue[int64], 10),
+		floats: make(chan publishedValue[float64], 10),
+	}
+	service := newService(
+		source,
+		publisher,
+		factory,
+		log.New(io.Discard, "", 0),
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- service.Run(ctx) }()
+	source.waitSubscribed(t)
+	first := receiveSubjectValues(t, publisher.floats, 2)
+	if first["sensor1.value"] != 12.5 || first["sensor2.value"] != 20 {
+		t.Fatalf("publications = %v", first)
+	}
+	reads := factory.reads()
+	if len(reads) == 0 {
+		t.Fatal("expected a grouped register read")
+	}
+	for _, read := range reads {
+		if read.addr != 0 || read.quantity != 12 {
+			t.Fatalf("reads = %+v, want 12-byte blocks at 0", reads)
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -381,12 +435,12 @@ type retryDeviceClient struct {
 	fail bool
 }
 
-func (*retryDeviceClient) ReadCoil(uint16) (bool, error) {
-	return false, nil
+func (*retryDeviceClient) ReadCoils(uint16, uint16) ([]bool, error) {
+	return []bool{false}, nil
 }
 
-func (*retryDeviceClient) ReadDiscreteInput(uint16) (bool, error) {
-	return false, nil
+func (*retryDeviceClient) ReadDiscreteInputs(uint16, uint16) ([]bool, error) {
+	return []bool{false}, nil
 }
 
 func (client *retryDeviceClient) ReadRawBytes(
@@ -404,12 +458,12 @@ func (*retryDeviceClient) Close() error {
 	return nil
 }
 
-func (*fakeDeviceClient) ReadCoil(uint16) (bool, error) {
-	return false, nil
+func (*fakeDeviceClient) ReadCoils(uint16, uint16) ([]bool, error) {
+	return []bool{false}, nil
 }
 
-func (*fakeDeviceClient) ReadDiscreteInput(uint16) (bool, error) {
-	return false, nil
+func (*fakeDeviceClient) ReadDiscreteInputs(uint16, uint16) ([]bool, error) {
+	return []bool{false}, nil
 }
 
 func (client *fakeDeviceClient) ReadRawBytes(
@@ -457,22 +511,90 @@ func pointDescriptorJSON(
 	connection string,
 ) string {
 	t.Helper()
+	return pointDescriptorJSONAt(t, enabled, connection, 0)
+}
+
+func pointDescriptorJSONAt(
+	t *testing.T,
+	enabled bool,
+	connection string,
+	addressOffset uint16,
+) string {
+	t.Helper()
 	value, err := address.Marshal(address.Descriptor{
 		Version:    address.CurrentVersion,
 		Driver:     "modbus",
 		ValueType:  address.ValueTypeFloat64,
 		Enabled:    enabled,
 		Connection: connection,
-		Config: []byte(`{
+		Config: []byte(fmt.Sprintf(`{
 			"register":"holding",
-			"address":0,
+			"address":%d,
 			"encoding":"float32"
-		}`),
+		}`, addressOffset)),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return value
+}
+
+type recordedRead struct {
+	addr     uint16
+	quantity uint16
+}
+
+type recordingClientFactory struct {
+	mu    sync.Mutex
+	calls []recordedRead
+}
+
+func (factory *recordingClientFactory) Open(Connection) (deviceClient, error) {
+	return &recordingDeviceClient{factory: factory}, nil
+}
+
+func (factory *recordingClientFactory) reads() []recordedRead {
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	return append([]recordedRead(nil), factory.calls...)
+}
+
+type recordingDeviceClient struct {
+	factory *recordingClientFactory
+}
+
+func (*recordingDeviceClient) ReadCoils(uint16, uint16) ([]bool, error) {
+	return []bool{false}, nil
+}
+
+func (*recordingDeviceClient) ReadDiscreteInputs(uint16, uint16) ([]bool, error) {
+	return []bool{false}, nil
+}
+
+func (client *recordingDeviceClient) ReadRawBytes(
+	addr uint16,
+	quantity uint16,
+	_ simonmodbus.RegType,
+) ([]byte, error) {
+	client.factory.mu.Lock()
+	client.factory.calls = append(client.factory.calls, recordedRead{
+		addr:     addr,
+		quantity: quantity,
+	})
+	client.factory.mu.Unlock()
+	low := math.Float32bits(12.5)
+	high := math.Float32bits(20)
+	raw := make([]byte, quantity)
+	copy(raw, []byte{
+		byte(low >> 24), byte(low >> 16), byte(low >> 8), byte(low),
+		0, 0, 0, 0,
+		byte(high >> 24), byte(high >> 16), byte(high >> 8), byte(high),
+	})
+	return raw, nil
+}
+
+func (*recordingDeviceClient) Close() error {
+	return nil
 }
 
 func receiveWithin[T any](t *testing.T, values <-chan T) T {

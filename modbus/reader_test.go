@@ -14,12 +14,12 @@ type fakeReader struct {
 	raw      []byte
 }
 
-func (reader fakeReader) ReadCoil(uint16) (bool, error) {
-	return reader.coil, nil
+func (reader fakeReader) ReadCoils(uint16, uint16) ([]bool, error) {
+	return []bool{reader.coil}, nil
 }
 
-func (reader fakeReader) ReadDiscreteInput(uint16) (bool, error) {
-	return reader.discrete, nil
+func (reader fakeReader) ReadDiscreteInputs(uint16, uint16) ([]bool, error) {
+	return []bool{reader.discrete}, nil
 }
 
 func (reader fakeReader) ReadRawBytes(
@@ -98,6 +98,57 @@ func TestReadValue(t *testing.T) {
 				t.Fatalf("readValue() = %#v, want %#v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestReadGroupDecodesPointsFromOneBlock(t *testing.T) {
+	t.Parallel()
+
+	low := math.Float32bits(12.5)
+	high := math.Float32bits(20)
+	reader := fakeReader{raw: []byte{
+		byte(low >> 24), byte(low >> 16), byte(low >> 8), byte(low),
+		0, 0, 0, 0,
+		byte(high >> 24), byte(high >> 16), byte(high >> 8), byte(high),
+	}}
+	values, err := readGroup(reader, pollGroup{
+		register: RegisterHoldingRegister,
+		address:  0,
+		quantity: 6,
+		points: []pollPoint{
+			{
+				subject: "low",
+				point: Point{
+					Register:  RegisterHoldingRegister,
+					Address:   0,
+					Encoding:  EncodingFloat32,
+					ByteOrder: OrderBig,
+					WordOrder: OrderBig,
+				},
+			},
+			{
+				subject: "high",
+				point: Point{
+					Register:  RegisterHoldingRegister,
+					Address:   4,
+					Encoding:  EncodingFloat32,
+					ByteOrder: OrderBig,
+					WordOrder: OrderBig,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 2 {
+		t.Fatalf("values = %d, want 2", len(values))
+	}
+	if math.Abs(values[0].(float64)-12.5) > 0.0001 {
+		t.Fatalf("low = %v, want 12.5", values[0])
+	}
+	if math.Abs(values[1].(float64)-20) > 0.0001 {
+		t.Fatalf("high = %v, want 20", values[1])
 	}
 }
 
