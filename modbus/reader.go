@@ -10,8 +10,8 @@ import (
 )
 
 type deviceReader interface {
-	ReadCoil(addr uint16) (bool, error)
-	ReadDiscreteInput(addr uint16) (bool, error)
+	ReadCoils(addr uint16, quantity uint16) ([]bool, error)
+	ReadDiscreteInputs(addr uint16, quantity uint16) ([]bool, error)
 	ReadRawBytes(
 		addr uint16,
 		quantity uint16,
@@ -19,24 +19,105 @@ type deviceReader interface {
 	) ([]byte, error)
 }
 
-func readValue(reader deviceReader, point Point) (any, error) {
-	switch point.Register {
+func readGroup(reader deviceReader, group pollGroup) ([]any, error) {
+	switch group.register {
 	case RegisterCoil:
-		return reader.ReadCoil(point.Address)
+		bits, err := reader.ReadCoils(group.address, group.quantity)
+		if err != nil {
+			return nil, err
+		}
+		return decodeBits(group, bits)
 	case RegisterDiscreteInput:
-		return reader.ReadDiscreteInput(point.Address)
+		bits, err := reader.ReadDiscreteInputs(group.address, group.quantity)
+		if err != nil {
+			return nil, err
+		}
+		return decodeBits(group, bits)
 	}
 
 	registerType := simonmodbus.HOLDING_REGISTER
-	if point.Register == RegisterInputRegister {
+	if group.register == RegisterInputRegister {
 		registerType = simonmodbus.INPUT_REGISTER
 	}
-	count := registerCount(point.Encoding) * 2
-	raw, err := reader.ReadRawBytes(point.Address, count, registerType)
+	raw, err := reader.ReadRawBytes(
+		group.address,
+		group.quantity*2,
+		registerType,
+	)
 	if err != nil {
 		return nil, err
 	}
-	expectedLength := int(count)
+	if len(raw) != int(group.quantity)*2 {
+		return nil, fmt.Errorf(
+			"read %d bytes from %s %d, want %d",
+			len(raw),
+			group.register,
+			group.address,
+			int(group.quantity)*2,
+		)
+	}
+	values := make([]any, 0, len(group.points))
+	for _, point := range group.points {
+		offset := int(point.point.Address-group.address) * 2
+		count := int(registerCount(point.point.Encoding)) * 2
+		if offset < 0 || offset+count > len(raw) {
+			return nil, fmt.Errorf(
+				"point %s is outside the %s block at %d",
+				point.subject,
+				group.register,
+				group.address,
+			)
+		}
+		value, err := decodeRegisters(raw[offset:offset+count], point.point)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	return values, nil
+}
+
+func decodeBits(group pollGroup, bits []bool) ([]any, error) {
+	if len(bits) != int(group.quantity) {
+		return nil, fmt.Errorf(
+			"read %d bits from %s %d, want %d",
+			len(bits),
+			group.register,
+			group.address,
+			group.quantity,
+		)
+	}
+	values := make([]any, 0, len(group.points))
+	for _, point := range group.points {
+		index := int(point.point.Address - group.address)
+		if index < 0 || index >= len(bits) {
+			return nil, fmt.Errorf(
+				"point %s is outside the %s block at %d",
+				point.subject,
+				group.register,
+				group.address,
+			)
+		}
+		values = append(values, bits[index])
+	}
+	return values, nil
+}
+
+func readValue(reader deviceReader, point Point) (any, error) {
+	values, err := readGroup(reader, pollGroup{
+		register: point.Register,
+		address:  point.Address,
+		quantity: registerCount(point.Encoding),
+		points:   []pollPoint{{point: point}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return values[0], nil
+}
+
+func decodeRegisters(raw []byte, point Point) (any, error) {
+	expectedLength := int(registerCount(point.Encoding)) * 2
 	if len(raw) != expectedLength {
 		return nil, fmt.Errorf(
 			"read %d bytes for %s, want %d",

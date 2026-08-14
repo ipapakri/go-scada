@@ -68,6 +68,7 @@ type Service struct {
 
 	reconcileMu sync.Mutex
 	mu          sync.Mutex
+	started     bool
 	points      map[string]pointDefinition
 	connections map[string]connectionDefinition
 	workers     map[string]*worker
@@ -149,6 +150,7 @@ func (service *Service) Run(ctx context.Context) error {
 	if err := service.load(AddressSuffix, service.reconcileAddress); err != nil {
 		return fmt.Errorf("load Modbus addresses: %w", err)
 	}
+	service.startWorkers()
 
 	<-ctx.Done()
 	return nil
@@ -209,11 +211,10 @@ func (service *Service) reconcileConnection(subject string, value string) {
 	}
 	oldClient := service.clients[subject]
 	delete(service.clients, subject)
-	affected := service.dependentSubjectsLocked(subject)
 	service.mu.Unlock()
 
-	for _, pointSubject := range affected {
-		service.restartPoint(pointSubject)
+	if service.started {
+		service.restartConnection(subject)
 	}
 	if oldClient != nil {
 		oldClient.close()
@@ -226,11 +227,8 @@ func (service *Service) invalidateConnection(subject string, cause error) {
 	delete(service.connections, subject)
 	oldClient := service.clients[subject]
 	delete(service.clients, subject)
-	affected := service.dependentSubjectsLocked(subject)
 	service.mu.Unlock()
-	for _, pointSubject := range affected {
-		service.restartPoint(pointSubject)
-	}
+	service.stopWorker(subject)
 	if oldClient != nil {
 		oldClient.close()
 	}
@@ -261,43 +259,47 @@ func (service *Service) reconcileAddress(subject string, value string) {
 		service.mu.Unlock()
 		return
 	}
+	previousConnection := ""
+	if exists {
+		previousConnection = existing.descriptor.Connection
+	}
 	service.points[subject] = pointDefinition{
 		raw:        value,
 		descriptor: descriptor,
 	}
 	service.mu.Unlock()
-	service.restartPoint(subject)
+	if !service.started {
+		return
+	}
+	if previousConnection != "" && previousConnection != descriptor.Connection {
+		service.restartConnection(previousConnection)
+	}
+	service.restartConnection(descriptor.Connection)
 }
 
-func (service *Service) restartPoint(subject string) {
+func (service *Service) startWorkers() {
+	service.reconcileMu.Lock()
+	defer service.reconcileMu.Unlock()
+	service.started = true
+	service.mu.Lock()
+	subjects := make([]string, 0, len(service.connections))
+	for subject := range service.connections {
+		subjects = append(subjects, subject)
+	}
+	service.mu.Unlock()
+	for _, subject := range subjects {
+		service.restartConnection(subject)
+	}
+}
+
+func (service *Service) restartConnection(subject string) {
 	service.stopWorker(subject)
 
 	service.mu.Lock()
-	definition, pointExists := service.points[subject]
-	connection, connectionExists :=
-		service.connections[definition.descriptor.Connection]
+	connection, connectionExists := service.connections[subject]
+	points := service.connectionPointsLocked(subject, connection)
 	service.mu.Unlock()
-	if !pointExists || !connectionExists {
-		return
-	}
-	if definition.descriptor.Driver != connection.descriptor.Driver {
-		service.logger.Printf(
-			"Address %s driver %q does not match connection %s driver %q",
-			subject,
-			definition.descriptor.Driver,
-			definition.descriptor.Connection,
-			connection.descriptor.Driver,
-		)
-		return
-	}
-	point, err := ParsePoint(definition.descriptor, connection.connection)
-	if err != nil {
-		service.logger.Printf("Invalid Modbus address %s: %v", subject, err)
-		return
-	}
-	target, ok := targetSubject(subject)
-	if !ok {
-		service.logger.Printf("Ignoring address with invalid subject %s", subject)
+	if !connectionExists || len(points) == 0 {
 		return
 	}
 
@@ -306,36 +308,62 @@ func (service *Service) restartPoint(subject string) {
 	service.mu.Lock()
 	service.workers[subject] = next
 	service.mu.Unlock()
-	go service.poll(ctx, next.done, target, point, connection.connection)
+	go service.poll(ctx, next.done, subject, connection.connection, points)
 }
 
 func (service *Service) removePoint(subject string) {
 	service.mu.Lock()
+	definition, exists := service.points[subject]
 	delete(service.points, subject)
 	service.mu.Unlock()
-	service.stopWorker(subject)
+	if exists && service.started {
+		service.restartConnection(definition.descriptor.Connection)
+	}
 }
 
-func (service *Service) dependentSubjectsLocked(
+func (service *Service) connectionPointsLocked(
 	connectionSubject string,
-) []string {
-	subjects := make([]string, 0)
+	connection connectionDefinition,
+) []pollPoint {
+	points := make([]pollPoint, 0)
 	for subject, definition := range service.points {
-		if definition.descriptor.Connection == connectionSubject {
-			subjects = append(subjects, subject)
+		if definition.descriptor.Connection != connectionSubject {
+			continue
 		}
+		if definition.descriptor.Driver != connection.descriptor.Driver {
+			service.logger.Printf(
+				"Address %s driver %q does not match connection %s driver %q",
+				subject,
+				definition.descriptor.Driver,
+				connectionSubject,
+				connection.descriptor.Driver,
+			)
+			continue
+		}
+		point, err := ParsePoint(definition.descriptor, connection.connection)
+		if err != nil {
+			service.logger.Printf("Invalid Modbus address %s: %v", subject, err)
+			continue
+		}
+		target, ok := targetSubject(subject)
+		if !ok {
+			service.logger.Printf("Ignoring address with invalid subject %s", subject)
+			continue
+		}
+		points = append(points, pollPoint{subject: target, point: point})
 	}
-	return subjects
+	return points
 }
 
 func (service *Service) poll(
 	ctx context.Context,
 	done chan<- struct{},
-	subject string,
-	point Point,
+	connectionSubject string,
 	connection Connection,
+	points []pollPoint,
 ) {
 	defer close(done)
+	groups := groupPoints(points)
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
@@ -343,14 +371,34 @@ func (service *Service) poll(
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-			client := service.clientFor(point.ConnectionSubject, connection)
-			value, err := client.read(point)
-			if err != nil {
-				service.logger.Printf("Read Modbus point %s failed: %v", subject, err)
-			} else if err := service.publish(subject, point.ValueType, value); err != nil {
-				service.logger.Printf("Publish Modbus point %s failed: %v", subject, err)
+			client := service.clientFor(connectionSubject, connection)
+			for _, group := range groups {
+				values, err := client.readGroup(group)
+				if err != nil {
+					service.logger.Printf(
+						"Read Modbus %s %d+%d failed: %v",
+						group.register,
+						group.address,
+						group.quantity,
+						err,
+					)
+					continue
+				}
+				for index, point := range group.points {
+					if err := service.publish(
+						point.subject,
+						point.point.ValueType,
+						values[index],
+					); err != nil {
+						service.logger.Printf(
+							"Publish Modbus point %s failed: %v",
+							point.subject,
+							err,
+						)
+					}
+				}
 			}
-			timer.Reset(point.PollInterval)
+			timer.Reset(connection.PollInterval)
 		}
 	}
 }
@@ -414,6 +462,7 @@ func (service *Service) stopWorker(subject string) {
 func (service *Service) stop() {
 	service.reconcileMu.Lock()
 	defer service.reconcileMu.Unlock()
+	service.started = false
 	service.mu.Lock()
 	workers := make([]*worker, 0, len(service.workers))
 	for _, current := range service.workers {
@@ -454,7 +503,7 @@ type managedClient struct {
 	client     deviceClient
 }
 
-func (client *managedClient) read(point Point) (any, error) {
+func (client *managedClient) readGroup(group pollGroup) ([]any, error) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	if client.client == nil {
@@ -464,12 +513,12 @@ func (client *managedClient) read(point Point) (any, error) {
 		}
 		client.client = opened
 	}
-	value, err := readValue(client.client, point)
+	values, err := readGroup(client.client, group)
 	if err != nil {
 		_ = client.client.Close()
 		client.client = nil
 	}
-	return value, err
+	return values, err
 }
 
 func (client *managedClient) close() {
