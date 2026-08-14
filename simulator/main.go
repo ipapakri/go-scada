@@ -56,6 +56,7 @@ func main() {
 	defer client.Close()
 
 	for _, entry := range entries {
+		log.Printf("setting %s: %s", entry.Subject, string(entry.Value))
 		if err := stream.Set(client, entry.Subject, string(entry.Value)); err != nil {
 			log.Fatalf("seed %s: %v", entry.Subject, err)
 		}
