@@ -192,6 +192,75 @@
     }
   },
   {
+    "subject": "plant.pump1.trip.alert_config",
+    "value": {
+      "version": 1,
+      "enabled": true,
+      "type": "binary",
+      "binary": {
+        "bad_value": true,
+        "true": { "property": "AlertProperties.Alarm", "text": "Pump 1 trip" },
+        "false": { "text": "Pump 1 is normal" }
+      }
+    }
+  },
+  {
+    "subject": "plant.pump2.trip.alert_config",
+    "value": {
+      "version": 1,
+      "enabled": true,
+      "type": "binary",
+      "binary": {
+        "bad_value": true,
+        "true": { "property": "AlertProperties.Alarm", "text": "Pump 2 trip" },
+        "false": { "text": "Pump 2 is normal" }
+      }
+    }
+  },
+  {
+    "subject": "plant.tank.sensor_bad.alert_config",
+    "value": {
+      "version": 1,
+      "enabled": true,
+      "type": "binary",
+      "binary": {
+        "bad_value": true,
+        "true": { "property": "AlertProperties.Alarm", "text": "Tank sensor is bad" },
+        "false": { "text": "Tank sensor is normal" }
+      }
+    }
+  },
+  {
+    "subject": "plant.valve.inlet.position.alert_config",
+    "value": {
+      "version": 1,
+      "enabled": true,
+      "type": "value",
+      "value": {
+        "value_type": "float64",
+        "intervals": [
+          { "min": null, "max": 0, "active": true, "text": "Inlet valve is closed (0%)" },
+          { "min": 0, "max": null, "active": true, "property": "AlertProperties.Alarm", "text": "Inlet valve is open" }
+        ]
+      }
+    }
+  },
+  {
+    "subject": "plant.valve.outlet.position.alert_config",
+    "value": {
+      "version": 1,
+      "enabled": true,
+      "type": "value",
+      "value": {
+        "value_type": "float64",
+        "intervals": [
+          { "min": null, "max": 0, "active": true, "text": "Outlet valve is closed (0%)" },
+          { "min": 0, "max": null, "active": true, "property": "AlertProperties.Alarm", "text": "Outlet valve is open" }
+        ]
+      }
+    }
+  },
+  {
     "subject": "plant.tank.alert_config",
     "value": {
       "version": 1,
@@ -200,7 +269,12 @@
       "summary": {
         "members": [
           "plant.tank.level_high.alert",
-          "plant.tank.temperature.alert"
+          "plant.tank.temperature.alert",
+          "plant.pump1.trip.alert",
+          "plant.pump2.trip.alert",
+          "plant.tank.sensor_bad.alert",
+          "plant.valve.inlet.position.alert",
+          "plant.valve.outlet.position.alert"
         ]
       }
     }
