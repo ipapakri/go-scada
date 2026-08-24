@@ -14,77 +14,103 @@ test('encodes float32 as big-endian Modbus words', () => {
   assert.deepEqual(simulator.encodeFloat32(-2.25), [0xc010, 0x0000])
 })
 
-test('each instance starts with ten independent tanks', () => {
+test('instance count defaults to 10 and can be overridden', () => {
+  assert.equal(simulator.parseInstanceCount(undefined), 10)
+  assert.equal(simulator.parseInstanceCount('25'), 25)
+  assert.equal(simulator.parseInstanceCount('0'), 10)
+  assert.equal(simulator.parseInstanceCount('-3'), 10)
+  assert.equal(simulator.parseInstanceCount('1.5'), 10)
+  assert.equal(simulator.parseInstanceCount('1000'), simulator.MAX_INSTANCE_COUNT)
+  assert.equal(simulator.initialState(4).plants.length, 4)
+  assert.equal(
+    simulator.INSTANCE_COUNT,
+    simulator.parseInstanceCount(process.env.SIMULATOR_INSTANCES)
+  )
+})
+
+test('each instance is a complete independent plant', () => {
   const state = simulator.initialState()
-  assert.equal(state.tanks.length, simulator.TANK_COUNT)
-  assert.equal(simulator.TANK_COUNT, 10)
-  const levels = new Set(state.tanks.map(tank => tank.level))
-  const seeds = new Set(state.tanks.map(tank => tank.seed))
-  assert.equal(levels.size, simulator.TANK_COUNT)
-  assert.equal(seeds.size, simulator.TANK_COUNT)
+  assert.equal(state.plants.length, simulator.INSTANCE_COUNT)
+  const seeds = new Set(state.plants.map(plant => plant.seed))
+  assert.equal(seeds.size, simulator.INSTANCE_COUNT)
+  for (const plant of state.plants) {
+    assert.equal(plant.level, 55)
+    assert.ok(Object.hasOwn(plant.controls, 'pump2Command'))
+    assert.ok(Object.hasOwn(plant.faults, 'pump2Trip'))
+    assert.ok(Object.hasOwn(plant, 'inletPosition'))
+    assert.ok(Object.hasOwn(plant, 'coolingValvePosition'))
+  }
 })
 
 test('automatic model remains inside physical bounds', () => {
   const state = simulator.initialState()
   for (let index = 0; index < 10000; index++) simulator.step(state, 1)
-  for (const tank of state.tanks) {
-    assert.ok(tank.level >= 0 && tank.level <= 100)
-    assert.ok(tank.temperature >= -20 && tank.temperature <= 130)
-    assert.ok(tank.pressure >= 0 && tank.pressure <= 10)
-    assert.ok(tank.inletPosition >= 0 && tank.inletPosition <= 100)
-    assert.ok(tank.outletPosition >= 0 && tank.outletPosition <= 100)
+  for (const plant of state.plants) {
+    assert.ok(plant.level >= 0 && plant.level <= 100)
+    assert.ok(plant.temperature >= -20 && plant.temperature <= 130)
+    assert.ok(plant.pressure >= 0 && plant.pressure <= 10)
+    assert.ok(plant.inletPosition >= 0 && plant.inletPosition <= 100)
+    assert.ok(plant.outletPosition >= 0 && plant.outletPosition <= 100)
+    assert.ok(plant.pump1Speed >= 0 && plant.pump1Speed <= 100)
+    assert.ok(plant.pump2Speed >= 0 && plant.pump2Speed <= 100)
   }
 })
 
-test('tanks keep distinct process values after a long automatic run', () => {
+test('plants keep distinct process values after a long automatic run', () => {
   const state = simulator.initialState()
   for (let index = 0; index < 200; index++) simulator.step(state, 1)
   const signatures = new Set(
-    state.tanks.map(tank => `${tank.level.toFixed(4)}:${tank.pressure.toFixed(4)}`)
+    state.plants.map(plant => `${plant.level.toFixed(4)}:${plant.pressure.toFixed(4)}`)
   )
   assert.ok(signatures.size > 1)
 })
 
-test('pump trip deterministically stops the selected pump', () => {
+test('pump trip only stops the selected plant pump', () => {
   const state = simulator.initialState()
   simulator.applyControl(state, 'automatic', false)
-  simulator.applyControl(state, 'pump1Command', true)
-  simulator.applyControl(state, 'pump1Trip', true)
+  simulator.applyControl(state, 'pump2Command', true)
+  simulator.applyControl(state, 'selectedInstance', 3)
+  simulator.applyControl(state, 'automatic', false)
+  simulator.applyControl(state, 'pump2Command', true)
+  simulator.applyControl(state, 'pump2Trip', true)
   for (let index = 0; index < 30; index++) simulator.step(state, 1)
-  assert.ok(state.pump1Speed < 0.1)
-  assert.equal(simulator.dashboardState(state).status.pump1Running, false)
+  assert.ok(state.plants[3].pump2Speed < 0.1)
+  assert.ok(state.plants[0].pump2Speed > 50)
+  assert.equal(state.plants[0].faults.pump2Trip, false)
+  simulator.applyControl(state, 'selectedInstance', 3)
+  assert.equal(simulator.dashboardState(state).status.pump2Running, false)
 })
 
-test('sensor freeze preserves published analog measurements', () => {
+test('sensor freeze preserves only the selected plant analog measurements', () => {
   const state = simulator.initialState()
   simulator.applyControl(state, 'sensorFreeze', true)
-  const frozen = simulator.measurements(state)
+  const frozen = simulator.measurements(state).plants[0]
   for (let index = 0; index < 20; index++) simulator.step(state, 1)
-  assert.deepEqual(simulator.measurements(state), frozen)
+  assert.deepEqual(simulator.measurements(state).plants[0], frozen)
+  assert.notEqual(simulator.measurements(state).plants[1].level, frozen.level)
   simulator.applyControl(state, 'sensorFreeze', false)
-  assert.notDeepEqual(simulator.measurements(state), frozen)
+  assert.notEqual(simulator.measurements(state).plants[0].level, frozen.level)
 })
 
-test('tank valve commands and faults apply to the selected tank', () => {
+test('valve commands and faults apply only to the selected plant', () => {
   const state = simulator.initialState()
   simulator.applyControl(state, 'automatic', false)
-  simulator.applyControl(state, 'selectedTank', 3)
+  simulator.applyControl(state, 'selectedInstance', 3)
+  simulator.applyControl(state, 'automatic', false)
   simulator.applyControl(state, 'inletCommand', 12)
   simulator.applyControl(state, 'inletStuck', true)
-  assert.equal(state.tanks[3].inletCommand, 12)
-  assert.equal(state.tanks[3].faults.inletStuck, true)
-  assert.equal(state.tanks[0].inletCommand, 70)
-  assert.equal(state.tanks[0].faults.inletStuck, false)
+  assert.equal(state.plants[3].controls.inletCommand, 12)
+  assert.equal(state.plants[3].faults.inletStuck, true)
+  assert.equal(state.plants[0].controls.inletCommand, 70)
+  assert.equal(state.plants[0].faults.inletStuck, false)
 })
 
 test('register map float ranges do not overlap', () => {
-  for (const [name, slave] of Object.entries(simulator.REGISTER_MAP)) {
+  for (const slave of Object.values(simulator.REGISTER_MAP)) {
     const occupied = new Set()
-    const count = name === 'tank' ? slave.count : 1
-    const stride = name === 'tank' ? slave.floatStride : 0
-    for (let index = 0; index < count; index++) {
+    for (let index = 0; index < slave.count; index++) {
       for (const address of Object.values(slave.floats)) {
-        const start = index * stride + address
+        const start = index * slave.floatStride + address
         assert.equal(occupied.has(start), false)
         assert.equal(occupied.has(start + 1), false)
         occupied.add(start)
@@ -94,33 +120,50 @@ test('register map float ranges do not overlap', () => {
   }
 })
 
-test('tank ten publishes at the last 20-register block', () => {
+test('last instance publishes at the final register block of each PLC', () => {
+  const last = simulator.INSTANCE_COUNT - 1
+  assert.equal(simulator.floatAddress('tank', 0, 'level'), 0)
+  assert.equal(simulator.floatAddress('pumps', 0, 'pump1Speed'), 0)
+  assert.equal(simulator.floatAddress('utility', 0, 'processFlow'), 0)
+  assert.equal(simulator.floatAddress('tank', last, 'level'), last * 20)
+  assert.equal(simulator.floatAddress('pumps', last, 'vibration'), last * 28 + 24)
+  assert.equal(simulator.floatAddress('utility', last, 'coolingValvePosition'), last * 16 + 12)
+  assert.equal(simulator.discreteAddress('pumps', last, 'pump2Trip'), last * 4 + 3)
+
   const writes = simulator.messagesForSlaves(simulator.initialState())
-  const tankTenLevel = writes.tank.find(
+  const tankLast = writes.tank.find(
     message => message.payload.register === 'input' &&
-      message.payload.address === simulator.tankFloatAddress(9, 'level') / 4
+      message.payload.address === simulator.floatAddress('tank', last, 'level') / 4
   )
-  assert.ok(tankTenLevel)
-  assert.equal(simulator.tankFloatAddress(9, 'level'), 180)
-  assert.equal(simulator.tankFloatAddress(9, 'outletPosition'), 196)
-  assert.equal(simulator.tankDiscreteAddress(9, 'sensorBad'), 29)
-  assert.equal(simulator.tankCoilAddress(9, 'outletOpen'), 19)
+  const pumpLast = writes.pumps.find(
+    message => message.payload.register === 'input' &&
+      message.payload.address === simulator.floatAddress('pumps', last, 'pump1Speed') / 4
+  )
+  assert.ok(tankLast)
+  assert.ok(pumpLast)
 })
 
-test('tank discrete and coil bitfields cover every tank', () => {
+test('each slave bitfield covers every instance', () => {
   const writes = simulator.messagesForSlaves(simulator.initialState())
-  const discrete = writes.tank.find(message => message.payload.register === 'discrete')
-  const coils = writes.tank.find(message => message.payload.register === 'coils')
-  assert.ok(Array.isArray(discrete.payload.value))
-  assert.ok(discrete.payload.value.length * 8 >= simulator.TANK_COUNT * simulator.TANK_DISCRETE_STRIDE)
-  assert.ok(Array.isArray(coils.payload.value))
-  assert.ok(coils.payload.value.length * 8 >= simulator.TANK_COUNT * simulator.TANK_COIL_STRIDE)
+  const count = simulator.INSTANCE_COUNT
+  const tankDiscrete = writes.tank.find(message => message.payload.register === 'discrete')
+  const pumpDiscrete = writes.pumps.find(message => message.payload.register === 'discrete')
+  const utilityCoils = writes.utility.find(message => message.payload.register === 'coils')
+  assert.ok(tankDiscrete.payload.value.length * 8 >= count * 3)
+  assert.ok(pumpDiscrete.payload.value.length * 8 >= count * 4)
+  assert.ok(utilityCoils.payload.value.length * 8 >= count)
 })
 
 test('every slave emits valid memory writes', () => {
   const writes = simulator.messagesForSlaves(simulator.initialState())
-  assert.ok(writes.tank.filter(message => message.payload.register === 'input').length >=
-    simulator.TANK_COUNT * Object.keys(simulator.REGISTER_MAP.tank.floats).length)
+  assert.equal(
+    writes.tank.filter(message => message.payload.register === 'input').length,
+    simulator.INSTANCE_COUNT * Object.keys(simulator.REGISTER_MAP.tank.floats).length
+  )
+  assert.equal(
+    writes.pumps.filter(message => message.payload.register === 'input').length,
+    simulator.INSTANCE_COUNT * Object.keys(simulator.REGISTER_MAP.pumps.floats).length
+  )
   for (const slaveWrites of Object.values(writes)) {
     assert.ok(slaveWrites.length > 0)
     for (const message of slaveWrites) {

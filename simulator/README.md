@@ -1,9 +1,10 @@
 # Node-RED Modbus simulator
 
-The simulator models a small process plant with 10 tanks and exposes its values
-through three independent Modbus TCP servers. The normal `modbus-service` polls
-those servers, publishes telemetry to NATS, and feeds the designer and alert
-service.
+The simulator runs N identical, independent process plants and exposes them
+through three Modbus TCP servers. Each plant has its own tank, pump 1, pump 2,
+inlet/outlet valves, cooling valve, and faults. The default is 10 plants.
+Override with `SIMULATOR_INSTANCES`. The normal `modbus-service` polls those
+servers, publishes telemetry to NATS, and feeds the designer and alert service.
 
 ## Start and stop
 
@@ -26,6 +27,13 @@ If port 1880 is already in use, choose another host port:
 SIMULATOR_DASHBOARD_PORT=1881 make simulator-up
 ```
 
+Run more independent plants (rebuild is not required, but the container must
+restart to pick up the env var):
+
+```sh
+SIMULATOR_INSTANCES=25 make simulator-up
+```
+
 Stop the stack with:
 
 ```sh
@@ -44,13 +52,12 @@ to seed only the operator plant.
 
 All addresses below are zero-based. Analog values are IEEE-754 float32 values
 stored in two consecutive big-endian input registers. Boolean status values use
-discrete inputs or coils.
+discrete inputs or coils. Plant *n* is 1-based.
 
 ### Tank PLC
 
-Endpoint `localhost:1502`, configured as unit ID 1. Each simulator instance
-exposes 10 tanks. Tank *n* (1-based) occupies a 20-register analog block and
-three discrete inputs plus two coils:
+Endpoint `localhost:1502`, configured as unit ID 1. Each plant occupies a
+20-register analog block, three discrete inputs, and two coils:
 
 - Input `20*(n-1)` + 0-1: tank level, percent
 - Input `20*(n-1)` + 4-5: tank temperature, degrees Celsius
@@ -63,61 +70,65 @@ three discrete inputs plus two coils:
 - Coil `2*(n-1)` + 0: inlet valve open
 - Coil `2*(n-1)` + 1: outlet valve open
 
-Tank 1 therefore keeps the original map (inputs 0-17, discrete 0-2, coils 0-1).
-Tank 10 uses inputs 180-197, discrete 27-29, and coils 18-19.
+Plant 1 keeps the original map (inputs 0-17, discrete 0-2, coils 0-1).
 
 ### Pump PLC
 
-Endpoint `localhost:1503`, configured as unit ID 2:
+Endpoint `localhost:1503`, configured as unit ID 2. Each plant occupies a
+28-register analog block and four discrete inputs:
 
-- Input 0-1: pump 1 speed, percent
-- Input 4-5: pump 1 current, ampere
-- Input 8-9: common discharge pressure, bar
-- Input 12-13: pump 2 speed, percent
-- Input 16-17: pump 2 current, ampere
-- Input 20-21: total process flow, cubic metres per hour
-- Input 24-25: vibration, millimetres per second
-- Discrete 0/1: pump 1 running/trip
-- Discrete 2/3: pump 2 running/trip
+- Input `28*(n-1)` + 0-1: pump 1 speed, percent
+- Input `28*(n-1)` + 4-5: pump 1 current, ampere
+- Input `28*(n-1)` + 8-9: discharge pressure, bar
+- Input `28*(n-1)` + 12-13: pump 2 speed, percent
+- Input `28*(n-1)` + 16-17: pump 2 current, ampere
+- Input `28*(n-1)` + 20-21: total process flow, cubic metres per hour
+- Input `28*(n-1)` + 24-25: vibration, millimetres per second
+- Discrete `4*(n-1)` + 0/1: pump 1 running/trip
+- Discrete `4*(n-1)` + 2/3: pump 2 running/trip
 
 ### Utility PLC
 
-Endpoint `localhost:1504`, configured as unit ID 3:
+Endpoint `localhost:1504`, configured as unit ID 3. Each plant occupies a
+16-register analog block, two discrete inputs, and one coil:
 
-- Input 0-1: process flow, cubic metres per hour
-- Input 4-5: ambient temperature, degrees Celsius
-- Input 8-9: conductivity, microsiemens per centimetre
-- Input 12-13: cooling valve position, percent
-- Discrete 0: high-temperature switch
-- Discrete 1: low-flow switch
-- Coil 0: cooling valve open
+- Input `16*(n-1)` + 0-1: process flow, cubic metres per hour
+- Input `16*(n-1)` + 4-5: ambient temperature, degrees Celsius
+- Input `16*(n-1)` + 8-9: conductivity, microsiemens per centimetre
+- Input `16*(n-1)` + 12-13: cooling valve position, percent
+- Discrete `2*(n-1)` + 0: high-temperature switch
+- Discrete `2*(n-1)` + 1: low-flow switch
+- Coil `n-1`: cooling valve open
 
 The complete Modbus-to-subject mapping is in
 `simulator/config/descriptors.json`. Seeded SCADA addresses currently follow
-tank 1 (the original register block). Tanks 2-10 are live on the Tank PLC and
-the Node-RED dashboard; they are not yet published as `plant.tank.*` points.
+plant 1 (the original register block). Plants 2-N are live on the three PLCs
+and the Node-RED dashboard; they are not yet published as extra `plant.*`
+points.
 
 ## Process behavior and controls
 
-Automatic mode regulates each tank around 60 percent by adjusting that tank's
-inlet and outlet valves. The two pumps stage from the highest tank level, and
-cooling follows the hottest tank. Pump speed affects flow, pressure, current,
-temperature, and vibration. Analog values contain small deterministic noise so
-trends look realistic while tests remain repeatable. Tanks start at different
-levels and use independent noise seeds so they do not stay identical.
+Each plant is an independent copy of the original model. Automatic mode
+regulates that plant's tank around 60 percent by adjusting its inlet and outlet
+valves and staging its two pumps. Pump speed affects that plant's flow,
+pressure, current, temperature, and vibration. Analog values contain small
+deterministic noise so trends look realistic while tests remain repeatable.
+Plants share the same starting values but use independent noise seeds, so they
+diverge instead of staying lockstep.
 
-The dashboard can select a tank, switch to manual mode, change that tank's valve
-commands and the shared pump commands, alter simulation speed, and inject:
+The dashboard selects a plant. Controls, valve commands, and faults — including
+pump trips — apply only to that plant. Simulation speed is global. Available
+faults:
 
 - pump 1 or pump 2 trips
-- stuck inlet or outlet valves on the selected tank
-- a high-temperature heat source on the selected tank
+- stuck inlet or outlet valves
+- a high-temperature heat source
 - frozen analog measurements
-- bad tank sensor values on the selected tank
+- bad tank sensor values
 
 The high-level and high-temperature conditions are seeded as SCADA alert
 definitions. Resetting faults does not reset process values; the automatic
-controller returns the plant to its normal operating point.
+controller returns that plant to its normal operating point.
 
 ## Verify telemetry
 
@@ -151,6 +162,7 @@ go test ./simulator ./modbus
 docker compose --profile simulation config --quiet
 ```
 
-The Node tests cover the 10-tank layout, process bounds, fault behavior,
-register encoding, and register-map overlap. The Go tests validate every seeded
-connection and address with the same parsers used by the running Modbus service.
+The Node tests cover independent plants, configurable instance count, process
+bounds, fault isolation, register encoding, and register-map overlap. The Go
+tests validate every seeded connection and address with the same parsers used
+by the running Modbus service.
