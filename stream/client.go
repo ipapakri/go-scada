@@ -45,6 +45,9 @@ type Client struct {
 
 	sequenceMu sync.Mutex
 	sequences  map[string]uint64
+
+	knownMu sync.Mutex
+	known   map[string]struct{}
 }
 
 // Option configures a Client.
@@ -129,6 +132,7 @@ func New(configPath string, options ...Option) (*Client, error) {
 		sourceID:   sourceID,
 		instanceID: time.Now().UnixNano(),
 		sequences:  make(map[string]uint64),
+		known:      make(map[string]struct{}),
 	}
 	for _, option := range options {
 		if option != nil {
@@ -173,6 +177,7 @@ func (client *Client) CreateStream() error {
 // Create initializes a subject with the zero value of V if it does not
 // already have a value.
 func Create[V Value](client *Client, subject string) error {
+	relative := strings.TrimSpace(subject)
 	subject, err := validateOperation(client, subject)
 	if err != nil {
 		return err
@@ -194,7 +199,13 @@ func Create[V Value](client *Client, subject string) error {
 		jetstream.WithExpectStream(client.config.StreamName),
 		jetstream.WithExpectLastSequencePerSubject(0),
 	)
-	if err == nil || isWrongLastSequence(err) {
+	if err == nil {
+		client.markKnown(subject)
+		client.announceCreated(relative)
+		return nil
+	}
+	if isWrongLastSequence(err) {
+		client.markKnown(subject)
 		return nil
 	}
 	return fmt.Errorf(
@@ -211,10 +222,12 @@ func Set[V Value](
 	subject string,
 	value V,
 ) error {
+	relative := strings.TrimSpace(subject)
 	subject, err := validateOperation(client, subject)
 	if err != nil {
 		return err
 	}
+	announce := client.shouldAnnounce(subject)
 
 	message := client.newMessage(subject, encodeValue(value))
 	data, err := proto.Marshal(message)
@@ -236,6 +249,10 @@ func Set[V Value](
 			client.config.StreamName,
 			err,
 		)
+	}
+	client.markKnown(subject)
+	if announce {
+		client.announceCreated(relative)
 	}
 	return nil
 }
@@ -769,6 +786,55 @@ func isWrongLastSequence(err error) bool {
 	var apiError *jetstream.APIError
 	return errors.As(err, &apiError) &&
 		apiError.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence
+}
+
+func (client *Client) shouldAnnounce(fullSubject string) bool {
+	if client == nil || fullSubject == "" {
+		return false
+	}
+	relative, ok := client.relativeSubject(fullSubject)
+	if !ok || relative == SubjectCreatedSubject {
+		return false
+	}
+
+	client.knownMu.Lock()
+	if _, known := client.known[fullSubject]; known {
+		client.knownMu.Unlock()
+		return false
+	}
+	client.knownMu.Unlock()
+
+	ctx, cancel := operationContext()
+	defer cancel()
+	jsStream, err := client.jetStream.Stream(ctx, client.config.StreamName)
+	if err != nil {
+		return false
+	}
+	_, err = jsStream.GetLastMsgForSubject(ctx, fullSubject)
+	return isMsgNotFound(err)
+}
+
+func (client *Client) markKnown(fullSubject string) {
+	if client == nil || fullSubject == "" {
+		return
+	}
+	client.knownMu.Lock()
+	client.known[fullSubject] = struct{}{}
+	client.knownMu.Unlock()
+}
+
+func (client *Client) announceCreated(relative string) {
+	if client == nil || relative == "" || relative == SubjectCreatedSubject {
+		return
+	}
+	payload, err := encodeSubjectCreated(relative)
+	if err != nil {
+		client.report(fmt.Errorf("encode subject created for %q: %w", relative, err))
+		return
+	}
+	if err := Set(client, SubjectCreatedSubject, payload); err != nil {
+		client.report(fmt.Errorf("announce subject created for %q: %w", relative, err))
+	}
 }
 
 func (client *Client) newMessage(

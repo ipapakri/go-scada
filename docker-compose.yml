@@ -1,5 +1,6 @@
 services:
   nats:
+    profiles: ["base"]
     image: nats:latest
     command:
       - "--jetstream"
@@ -17,8 +18,6 @@ services:
     build:
       context: .
       target: bootstrap
-    depends_on:
-      - nats
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro
     restart: on-failure
@@ -78,8 +77,6 @@ services:
       target: designer
     ports:
       - "8080:8080"
-    depends_on:
-      - nats
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro
     restart: unless-stopped

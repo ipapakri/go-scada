@@ -159,9 +159,10 @@ func (service *Service) Run(ctx context.Context) error {
 	service.running = true
 	service.reconcileMu.Unlock()
 
-	// Load retained state before live consumers start mutating it. Ordered
-	// consumers use DeliverLastPolicy, so updates racing this load are still
-	// delivered after the subscriptions are established.
+	if err := service.startWatches(); err != nil {
+		service.stop()
+		return err
+	}
 	if err := service.loadInitial(); err != nil {
 		service.stop()
 		return err
@@ -175,18 +176,41 @@ func (service *Service) Run(ctx context.Context) error {
 	return nil
 }
 
-func (service *Service) subscribeGlobals() error {
-	propertySub, err := service.stream.SubscribePrefixString(
-		strings.TrimSuffix(propertiesPrefix, "."),
-		func(subject, value string) error {
+func (service *Service) startWatches() error {
+	configs, err := service.stream.WatchExact(
+		configsWatch,
+		func(subject string, value any) error {
+			raw, ok := value.(string)
+			if !ok {
+				service.logger.Printf("Alert config %s has type %T, want string", subject, value)
+				return nil
+			}
 			service.reconcileMu.Lock()
 			defer service.reconcileMu.Unlock()
-			service.reconcilePropertyLocked(subject, value)
+			service.reconcileConfigLocked(subject, raw)
 			return nil
 		},
 	)
 	if err != nil {
-		return fmt.Errorf("subscribe to alert properties: %w", err)
+		return fmt.Errorf("watch alert configs: %w", err)
+	}
+	states, err := service.stream.WatchExact(
+		statesWatch,
+		func(subject string, value any) error {
+			raw, ok := value.(string)
+			if !ok {
+				service.logger.Printf("Alert state %s has type %T, want string", subject, value)
+				return nil
+			}
+			service.reconcileMu.Lock()
+			defer service.reconcileMu.Unlock()
+			service.reconcileStateLocked(subject, raw)
+			return nil
+		},
+	)
+	if err != nil {
+		configs.Stop()
+		return fmt.Errorf("watch alert states: %w", err)
 	}
 	configSub, err := service.stream.SubscribeSuffixString(
 		configSuffix,
@@ -198,8 +222,9 @@ func (service *Service) subscribeGlobals() error {
 		},
 	)
 	if err != nil {
-		propertySub.Stop()
-		return fmt.Errorf("subscribe to alert configs: %w", err)
+		configs.Stop()
+		states.Stop()
+		return fmt.Errorf("watch alert inputs: %w", err)
 	}
 	stateSub, err := service.stream.SubscribeSuffixString(
 		alertSuffix,
@@ -526,6 +551,7 @@ func (service *Service) storeAndPublishLocked(subject string, state State) {
 }
 
 func (service *Service) reconcileStateLocked(subject, raw string) {
+	service.logger.Printf("Reconcile alert state %s: %s", subject, raw)
 	incoming, err := parseStateUnchecked(raw)
 	if err != nil {
 		if _, owned := service.byOutput[subject]; owned {

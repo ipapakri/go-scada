@@ -375,6 +375,21 @@ func (service *Service) poll(
 ) {
 	defer close(done)
 	groups := groupPoints(points)
+	for _, group := range groups {
+		if len(group.points) == 0 {
+			continue
+		}
+		startAddr := group.address
+		endAddr := group.address + group.quantity - 1
+		pointSubjects := make([]string, len(group.points))
+		for i, p := range group.points {
+			pointSubjects[i] = p.subject
+		}
+		log.Printf(
+			"Group: register=%s, address range=[%d-%d], quantity=%d, subjects=%v",
+			group.register, startAddr, endAddr, group.quantity, pointSubjects,
+		)
+	}
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
