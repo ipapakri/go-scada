@@ -1,6 +1,7 @@
 .git
 .cursor
 nats-data
+retain-data
 **/node_modules
 designer-ui/dist
 app1/app1

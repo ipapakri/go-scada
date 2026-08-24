@@ -5,14 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	telemetryv1 "go-scada/gen/go/go_scada/telemetry/v1"
 
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -22,7 +20,6 @@ const (
 	// worker: hash(subject) % DefaultInterestWorkers.
 	DefaultInterestWorkers = 10
 	interestWorkerQueue    = 64
-	interestDummyToken     = "__interest.empty"
 )
 
 type exactJob struct {
@@ -30,21 +27,17 @@ type exactJob struct {
 	value   any
 }
 
-// ExactSubscription is a durable pull consumer whose FilterSubjects list is
-// grown with UpdateConsumer. Live messages are sharded onto a worker pool.
+// ExactSubscription watches a dynamic set of exact subjects. Live messages
+// are sharded onto a worker pool.
 type ExactSubscription struct {
 	client  *Client
-	durable string
-	dummy   string
+	name    string
 	handler func(string, any) error
 
-	mu       sync.Mutex
-	watched  map[string]struct{}
-	jsStream jetstream.Stream
-	consumer jetstream.Consumer
-	consume  jetstream.ConsumeContext
-	ctx      context.Context
-	cancel   context.CancelFunc
+	mu      sync.Mutex
+	watched map[string]*nats.Subscription
+	ctx     context.Context
+	cancel  context.CancelFunc
 
 	workers []chan exactJob
 	wg      sync.WaitGroup
@@ -52,8 +45,8 @@ type ExactSubscription struct {
 	closed  chan struct{}
 }
 
-// SubscribeExact starts a named durable consumer with a dummy filter so it can
-// be updated as exact subjects are added. Handler subjects are system-relative.
+// SubscribeExact starts a named exact-subject watcher. Handler subjects are
+// system-relative.
 func SubscribeExact(
 	client *Client,
 	name string,
@@ -74,94 +67,26 @@ func SubscribeExact(
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	jsStream, err := client.jetStream.Stream(ctx, client.config.StreamName)
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf(
-			"open stream %q: %w",
-			client.config.StreamName,
-			err,
-		)
-	}
-
 	subscription := &ExactSubscription{
-		client:   client,
-		durable:  fmt.Sprintf("%s-%d", name, client.instanceID),
-		dummy:    client.config.SystemName + "." + interestDummyToken,
-		handler:  handler,
-		watched:  make(map[string]struct{}),
-		jsStream: jsStream,
-		ctx:      ctx,
-		cancel:   cancel,
-		workers:  make([]chan exactJob, DefaultInterestWorkers),
-		closed:   make(chan struct{}),
+		client:  client,
+		name:    name,
+		handler: handler,
+		watched: make(map[string]*nats.Subscription),
+		ctx:     ctx,
+		cancel:  cancel,
+		workers: make([]chan exactJob, DefaultInterestWorkers),
+		closed:  make(chan struct{}),
 	}
 	for index := range subscription.workers {
 		subscription.workers[index] = make(chan exactJob, interestWorkerQueue)
 		subscription.wg.Add(1)
 		go subscription.runWorker(subscription.workers[index])
 	}
-
-	consumer, err := jsStream.CreateOrUpdateConsumer(ctx, subscription.configLocked())
-	if err != nil {
-		subscription.Stop()
-		return nil, fmt.Errorf(
-			"create exact consumer %q: %w",
-			subscription.durable,
-			err,
-		)
-	}
-	subscription.consumer = consumer
-	consume, err := consumer.Consume(
-		func(msg jetstream.Msg) {
-			relative, ok := client.relativeSubject(msg.Subject())
-			if !ok || relative == interestDummyToken {
-				return
-			}
-			var message telemetryv1.Message
-			if err := proto.Unmarshal(msg.Data(), &message); err != nil {
-				client.report(fmt.Errorf(
-					"decode subject %q from stream %q: %w",
-					msg.Subject(),
-					client.config.StreamName,
-					err,
-				))
-				return
-			}
-			value, err := decodeAny(message.Value)
-			if err != nil {
-				client.report(fmt.Errorf(
-					"decode value for subject %q from stream %q: %w",
-					msg.Subject(),
-					client.config.StreamName,
-					err,
-				))
-				return
-			}
-			subscription.dispatch(relative, value)
-		},
-		jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
-			client.report(fmt.Errorf(
-				"consume exact consumer %q: %w",
-				subscription.durable,
-				err,
-			))
-		}),
-	)
-	if err != nil {
-		subscription.Stop()
-		return nil, fmt.Errorf(
-			"consume exact consumer %q: %w",
-			subscription.durable,
-			err,
-		)
-	}
-	subscription.consume = consume
 	return subscription, nil
 }
 
 // Add watches subject and invokes the handler with the retained value when one
-// exists. UpdateConsumer does not replay that value.
+// exists.
 func (subscription *ExactSubscription) Add(subject string) error {
 	return subscription.ensure(subject, true)
 }
@@ -183,11 +108,15 @@ func (subscription *ExactSubscription) Remove(subject string) error {
 
 	subscription.mu.Lock()
 	defer subscription.mu.Unlock()
-	if _, exists := subscription.watched[subject]; !exists {
+	sub, exists := subscription.watched[subject]
+	if !exists {
 		return nil
 	}
 	delete(subscription.watched, subject)
-	return subscription.updateLocked()
+	if sub != nil {
+		_ = sub.Unsubscribe()
+	}
+	return nil
 }
 
 // Stop immediately stops the consumer and workers.
@@ -199,19 +128,18 @@ func (subscription *ExactSubscription) Stop() {
 		if subscription.cancel != nil {
 			subscription.cancel()
 		}
-		if subscription.consume != nil {
-			subscription.consume.Stop()
-			<-subscription.consume.Closed()
+		subscription.mu.Lock()
+		for subject, sub := range subscription.watched {
+			if sub != nil {
+				_ = sub.Unsubscribe()
+			}
+			delete(subscription.watched, subject)
 		}
+		subscription.mu.Unlock()
 		for _, worker := range subscription.workers {
 			close(worker)
 		}
 		subscription.wg.Wait()
-		ctx, cancel := operationContext()
-		defer cancel()
-		if subscription.jsStream != nil && subscription.durable != "" {
-			_ = subscription.jsStream.DeleteConsumer(ctx, subscription.durable)
-		}
 		close(subscription.closed)
 	})
 }
@@ -235,15 +163,35 @@ func (subscription *ExactSubscription) ensure(subject string, catchUp bool) erro
 		return errors.New("subject is required")
 	}
 
+	full, err := validateOperation(subscription.client, subject)
+	if err != nil {
+		return err
+	}
+
 	subscription.mu.Lock()
 	_, exists := subscription.watched[subject]
 	if !exists {
-		subscription.watched[subject] = struct{}{}
-		if err := subscription.updateLocked(); err != nil {
-			delete(subscription.watched, subject)
+		sub, err := subscription.client.connection.Subscribe(full, func(message *nats.Msg) {
+			relative, ok := subscription.client.relativeSubject(message.Subject)
+			if !ok {
+				return
+			}
+			value, err := decodeExact(message.Data)
+			if err != nil {
+				subscription.client.report(fmt.Errorf(
+					"decode subject %q: %w",
+					message.Subject,
+					err,
+				))
+				return
+			}
+			subscription.dispatch(relative, value)
+		})
+		if err != nil {
 			subscription.mu.Unlock()
-			return err
+			return fmt.Errorf("subscribe to %q: %w", full, err)
 		}
+		subscription.watched[subject] = sub
 	}
 	subscription.mu.Unlock()
 
@@ -258,45 +206,6 @@ func (subscription *ExactSubscription) ensure(subject string, catchUp bool) erro
 		return err
 	}
 	return subscription.handler(subject, value)
-}
-
-func (subscription *ExactSubscription) updateLocked() error {
-	ctx, cancel := operationContext()
-	defer cancel()
-	consumer, err := subscription.jsStream.UpdateConsumer(ctx, subscription.configLocked())
-	if err != nil {
-		return fmt.Errorf(
-			"update exact consumer %q: %w",
-			subscription.durable,
-			err,
-		)
-	}
-	subscription.consumer = consumer
-	return nil
-}
-
-func (subscription *ExactSubscription) configLocked() jetstream.ConsumerConfig {
-	return jetstream.ConsumerConfig{
-		Name:              subscription.durable,
-		Durable:           subscription.durable,
-		FilterSubjects:    subscription.filtersLocked(),
-		DeliverPolicy:     jetstream.DeliverNewPolicy,
-		AckPolicy:         jetstream.AckNonePolicy,
-		InactiveThreshold: 5 * time.Minute,
-		MemoryStorage:     true,
-		Replicas:          1,
-	}
-}
-
-func (subscription *ExactSubscription) filtersLocked() []string {
-	filters := make([]string, 0, len(subscription.watched)+1)
-	filters = append(filters, subscription.dummy)
-	full := make([]string, 0, len(subscription.watched))
-	for relative := range subscription.watched {
-		full = append(full, subscription.client.config.SystemName+"."+relative)
-	}
-	sort.Strings(full)
-	return append(filters, full...)
 }
 
 func (subscription *ExactSubscription) dispatch(subject string, value any) {
@@ -314,7 +223,7 @@ func (subscription *ExactSubscription) runWorker(jobs <-chan exactJob) {
 			subscription.client.report(fmt.Errorf(
 				"handle subject %q on %q: %w",
 				job.subject,
-				subscription.durable,
+				subscription.name,
 				err,
 			))
 		}
@@ -330,64 +239,10 @@ func workerIndex(subject string, workers int) int {
 	return int(hash.Sum32() % uint32(workers))
 }
 
-func GetAny(client *Client, subject string) (any, error) {
-	subject, err := validateOperation(client, subject)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := operationContext()
-	defer cancel()
-	jsStream, err := client.jetStream.Stream(ctx, client.config.StreamName)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"open stream %q: %w",
-			client.config.StreamName,
-			err,
-		)
-	}
-	raw, err := jsStream.GetLastMsgForSubject(ctx, subject)
-	if err != nil {
-		return nil, err
-	}
+func decodeExact(data []byte) (any, error) {
 	var message telemetryv1.Message
-	if err := proto.Unmarshal(raw.Data, &message); err != nil {
-		return nil, fmt.Errorf(
-			"decode latest subject %q: %w",
-			subject,
-			err,
-		)
+	if err := proto.Unmarshal(data, &message); err != nil {
+		return nil, err
 	}
 	return decodeAny(message.Value)
-}
-
-func decodeAny(value *telemetryv1.Value) (any, error) {
-	if value == nil || value.Kind == nil {
-		return nil, errors.New("telemetry value is missing")
-	}
-	switch kind := value.Kind.(type) {
-	case *telemetryv1.Value_IntValue:
-		return kind.IntValue, nil
-	case *telemetryv1.Value_FloatValue:
-		return kind.FloatValue, nil
-	case *telemetryv1.Value_StringValue:
-		return kind.StringValue, nil
-	case *telemetryv1.Value_BoolValue:
-		return kind.BoolValue, nil
-	case *telemetryv1.Value_BytesValue:
-		return append([]byte(nil), kind.BytesValue...), nil
-	case *telemetryv1.Value_IntArray:
-		return append([]int64(nil), kind.IntArray.GetValues()...), nil
-	case *telemetryv1.Value_FloatArray:
-		return append([]float64(nil), kind.FloatArray.GetValues()...), nil
-	case *telemetryv1.Value_StringArray:
-		return append([]string(nil), kind.StringArray.GetValues()...), nil
-	case *telemetryv1.Value_BoolArray:
-		return append([]bool(nil), kind.BoolArray.GetValues()...), nil
-	default:
-		return nil, fmt.Errorf("unsupported protobuf value type %T", value.Kind)
-	}
-}
-
-func isMsgNotFound(err error) bool {
-	return errors.Is(err, jetstream.ErrMsgNotFound)
 }

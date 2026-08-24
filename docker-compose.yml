@@ -1,26 +1,27 @@
 services:
   nats:
+    #profiles: ["base", "run", "simulation"]
     profiles: ["base"]
     image: nats:latest
     command:
-      - "--jetstream"
-      - "--store_dir=/data"
       - "--http_port=8222"
     ports:
       - "4222:4222"
       - "8222:8222"
-    volumes:
-      - ./nats-data:/data
     restart: unless-stopped
 
-  bootstrap:
+  retain-service:
     profiles: ["run"]
     build:
       context: .
-      target: bootstrap
+      target: retain-service
+    command: ["-db", "/data/retain.db"]
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro
-    restart: on-failure
+      - ./retain-data:/data
+    depends_on:
+      - nats
+    restart: unless-stopped
 
   simulator:
     profiles: ["simulation"]
@@ -57,6 +58,8 @@ services:
     build:
       context: .
       target: modbus-service
+    depends_on:
+      - retain-service
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro
     restart: unless-stopped
@@ -68,6 +71,8 @@ services:
       target: alert-service
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro
+    depends_on:
+      - retain-service
     restart: unless-stopped
 
   designer:
@@ -79,4 +84,6 @@ services:
       - "8080:8080"
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro
+    depends_on:
+      - retain-service
     restart: unless-stopped

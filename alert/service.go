@@ -174,9 +174,9 @@ func (service *Service) Run(ctx context.Context) error {
 	service.running = true
 	service.reconcileMu.Unlock()
 
-	// Exact consumers use DeliverNewPolicy, so they must be running before the
-	// snapshot load. Known names are Watch()ed after load for live updates;
-	// Add() is reserved for registry-discovered subjects that still need Get.
+	// Exact watches must be running before the snapshot load. Known names are
+	// Watch()ed after load for live updates; Add() is reserved for
+	// registry-discovered subjects that still need Get.
 	if err := service.startWatches(); err != nil {
 		service.stop()
 		return err

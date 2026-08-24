@@ -1,9 +1,11 @@
 // Package stream provides a protobuf-aware client for the application's
-// shared NATS JetStream stream.
+// shared NATS latest-value bus. Live traffic uses core NATS; Get and List
+// read from the retain service.
 package stream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,9 +15,9 @@ import (
 	"time"
 
 	telemetryv1 "go-scada/gen/go/go_scada/telemetry/v1"
+	"go-scada/retain"
 
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gopkg.in/yaml.v3"
@@ -27,17 +29,18 @@ const (
 	defaultValueTTL         = 10 * time.Second
 )
 
+// ErrNotFound is returned when a subject has no retained value.
+var ErrNotFound = errors.New("subject value not found")
+
 // Config contains the application-wide stream connection settings.
 type Config struct {
 	NATSURL    string `yaml:"nats_url"`
-	StreamName string `yaml:"stream_name"`
 	SystemName string `yaml:"system_name"`
 }
 
-// Client owns a NATS connection and provides access to the shared stream.
+// Client owns a NATS connection and provides access to the shared bus.
 type Client struct {
 	connection   *nats.Conn
-	jetStream    jetstream.JetStream
 	config       Config
 	sourceID     string
 	instanceID   int64
@@ -59,15 +62,9 @@ type Value interface {
 		[]byte | []int64 | []float64 | []string | []bool
 }
 
-// Subscription controls an active stream subscription.
-type Subscription struct {
-	consume jetstream.ConsumeContext
-	cancel  context.CancelFunc
-	once    sync.Once
-}
-
-// WithErrorHandler handles asynchronous consumer, decoding, and value-handler
-// errors. The handler should return quickly so it does not delay consumption.
+// WithErrorHandler handles asynchronous subscription, decoding, and
+// value-handler errors. The handler should return quickly so it does not
+// delay consumption.
 func WithErrorHandler(handler func(error)) Option {
 	return func(client *Client) {
 		client.errorHandler = handler
@@ -87,13 +84,9 @@ func LoadConfig(path string) (Config, error) {
 	}
 
 	config.NATSURL = strings.TrimSpace(config.NATSURL)
-	config.StreamName = strings.TrimSpace(config.StreamName)
 	config.SystemName = strings.TrimSpace(config.SystemName)
 	if config.NATSURL == "" {
 		return Config{}, errors.New("stream config nats_url is required")
-	}
-	if config.StreamName == "" {
-		return Config{}, errors.New("stream config stream_name is required")
 	}
 	if config.SystemName == "" {
 		return Config{}, errors.New("stream config system_name is required")
@@ -114,12 +107,6 @@ func New(configPath string, options ...Option) (*Client, error) {
 		return nil, fmt.Errorf("connect to NATS at %q: %w", config.NATSURL, err)
 	}
 
-	js, err := jetstream.New(connection)
-	if err != nil {
-		connection.Close()
-		return nil, fmt.Errorf("create JetStream client: %w", err)
-	}
-
 	sourceID, err := os.Hostname()
 	if err != nil || strings.TrimSpace(sourceID) == "" {
 		sourceID = "unknown"
@@ -127,7 +114,6 @@ func New(configPath string, options ...Option) (*Client, error) {
 
 	client := &Client{
 		connection: connection,
-		jetStream:  js,
 		config:     config,
 		sourceID:   sourceID,
 		instanceID: time.Now().UnixNano(),
@@ -149,71 +135,22 @@ func (client *Client) Close() {
 	}
 }
 
-// CreateStream creates or updates the configured latest-value stream.
-func (client *Client) CreateStream() error {
-	if client == nil {
-		return errors.New("stream client is not initialized")
-	}
-
-	ctx, cancel := operationContext()
-	defer cancel()
-	_, err := client.jetStream.CreateOrUpdateStream(
-		ctx,
-		latestValueStreamConfig(
-			client.config.StreamName,
-			client.config.SystemName,
-		),
-	)
-	if err != nil {
-		return fmt.Errorf(
-			"provision stream %q: %w",
-			client.config.StreamName,
-			err,
-		)
-	}
-	return nil
-}
-
 // Create initializes a subject with the zero value of V if it does not
 // already have a value.
 func Create[V Value](client *Client, subject string) error {
 	relative := strings.TrimSpace(subject)
-	subject, err := validateOperation(client, subject)
-	if err != nil {
+	if _, err := Get[V](client, relative); err == nil {
+		full, validateErr := validateOperation(client, relative)
+		if validateErr == nil {
+			client.markKnown(full)
+		}
+		return nil
+	} else if !errors.Is(err, ErrNotFound) {
 		return err
 	}
 
 	var value V
-	message := client.newMessage(subject, encodeValue(value))
-	data, err := proto.Marshal(message)
-	if err != nil {
-		return fmt.Errorf("marshal initial message for subject %q: %w", subject, err)
-	}
-
-	ctx, cancel := operationContext()
-	defer cancel()
-	_, err = client.jetStream.Publish(
-		ctx,
-		subject,
-		data,
-		jetstream.WithExpectStream(client.config.StreamName),
-		jetstream.WithExpectLastSequencePerSubject(0),
-	)
-	if err == nil {
-		client.markKnown(subject)
-		client.announceCreated(relative)
-		return nil
-	}
-	if isWrongLastSequence(err) {
-		client.markKnown(subject)
-		return nil
-	}
-	return fmt.Errorf(
-		"initialize subject %q in stream %q: %w",
-		subject,
-		client.config.StreamName,
-		err,
-	)
+	return Set(client, relative, value)
 }
 
 // Set publishes a value as a telemetry message.
@@ -235,20 +172,8 @@ func Set[V Value](
 		return fmt.Errorf("marshal message for subject %q: %w", subject, err)
 	}
 
-	ctx, cancel := operationContext()
-	defer cancel()
-	if _, err := client.jetStream.Publish(
-		ctx,
-		subject,
-		data,
-		jetstream.WithExpectStream(client.config.StreamName),
-	); err != nil {
-		return fmt.Errorf(
-			"publish subject %q to stream %q: %w",
-			subject,
-			client.config.StreamName,
-			err,
-		)
+	if err := client.connection.Publish(subject, data); err != nil {
+		return fmt.Errorf("publish subject %q: %w", subject, err)
 	}
 	client.markKnown(subject)
 	if announce {
@@ -268,40 +193,37 @@ func Get[V Value](
 		return zero, err
 	}
 
-	ctx, cancel := operationContext()
-	defer cancel()
-	jsStream, err := client.jetStream.Stream(ctx, client.config.StreamName)
+	raw, err := client.getPayload(subject)
 	if err != nil {
-		return zero, fmt.Errorf(
-			"open stream %q: %w",
-			client.config.StreamName,
-			err,
-		)
-	}
-	raw, err := jsStream.GetLastMsgForSubject(ctx, subject)
-	if err != nil {
-		return zero, fmt.Errorf(
-			"get latest subject %q from stream %q: %w",
-			subject,
-			client.config.StreamName,
-			err,
-		)
+		return zero, fmt.Errorf("get latest subject %q: %w", subject, err)
 	}
 
 	var message telemetryv1.Message
-	if err := proto.Unmarshal(raw.Data, &message); err != nil {
-		return zero, fmt.Errorf(
-			"decode latest subject %q from stream %q: %w",
-			subject,
-			client.config.StreamName,
-			err,
-		)
+	if err := proto.Unmarshal(raw, &message); err != nil {
+		return zero, fmt.Errorf("decode latest subject %q: %w", subject, err)
 	}
 	value, err := decodeValue[V](message.Value)
 	if err != nil {
 		return zero, fmt.Errorf("decode value for subject %q: %w", subject, err)
 	}
 	return value, nil
+}
+
+// GetAny retrieves the latest value without knowing its Go type.
+func GetAny(client *Client, subject string) (any, error) {
+	subject, err := validateOperation(client, subject)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := client.getPayload(subject)
+	if err != nil {
+		return nil, err
+	}
+	var message telemetryv1.Message
+	if err := proto.Unmarshal(raw, &message); err != nil {
+		return nil, fmt.Errorf("decode latest subject %q: %w", subject, err)
+	}
+	return decodeAny(message.Value)
 }
 
 // ListSubjects returns the system-relative subjects whose names end in suffix.
@@ -313,426 +235,66 @@ func ListSubjects(client *Client, suffix string) ([]string, error) {
 	if suffix == "" {
 		return nil, errors.New("subject suffix is required")
 	}
-
-	ctx, cancel := operationContext()
-	defer cancel()
-	jsStream, err := client.jetStream.Stream(ctx, client.config.StreamName)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"open stream %q: %w",
-			client.config.StreamName,
-			err,
-		)
-	}
-	info, err := jsStream.Info(
-		ctx,
-		jetstream.WithSubjectFilter(client.config.SystemName+".>"),
-	)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"list subjects in stream %q: %w",
-			client.config.StreamName,
-			err,
-		)
-	}
-
-	subjects := make([]string, 0)
-	for fullSubject := range info.State.Subjects {
-		relative, ok := client.relativeSubject(fullSubject)
-		if ok && strings.HasSuffix(relative, suffix) {
-			subjects = append(subjects, relative)
-		}
-	}
-	sort.Strings(subjects)
-	return subjects, nil
+	return client.listSubjects(retain.ListRequest{Suffix: suffix})
 }
 
 // ListSubjectsPrefix returns sorted system-relative subjects below prefix.
 // Prefixes are matched at a subject-token boundary, so "area" and "area."
 // both match "area.point" but not "area2.point".
 func ListSubjectsPrefix(client *Client, prefix string) ([]string, error) {
-	prefix, filter, err := validatePrefix(client, prefix)
+	prefix, _, err := validatePrefix(client, prefix)
 	if err != nil {
 		return nil, err
 	}
+	return client.listSubjects(retain.ListRequest{Prefix: prefix})
+}
 
+func (client *Client) getPayload(fullSubject string) ([]byte, error) {
 	ctx, cancel := operationContext()
 	defer cancel()
-	jsStream, err := client.jetStream.Stream(ctx, client.config.StreamName)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"open stream %q: %w",
-			client.config.StreamName,
-			err,
-		)
-	}
-	info, err := jsStream.Info(ctx, jetstream.WithSubjectFilter(filter))
-	if err != nil {
-		return nil, fmt.Errorf(
-			"list subjects with prefix %q in stream %q: %w",
-			prefix,
-			client.config.StreamName,
-			err,
-		)
-	}
+	return client.getPayloadContext(ctx, fullSubject)
+}
 
-	subjects := make([]string, 0)
-	for fullSubject := range info.State.Subjects {
-		relative, ok := client.relativeSubject(fullSubject)
-		if ok && strings.HasPrefix(relative, prefix) {
-			subjects = append(subjects, relative)
-		}
+func (client *Client) getPayloadContext(
+	ctx context.Context,
+	fullSubject string,
+) ([]byte, error) {
+	message, err := client.connection.RequestWithContext(
+		ctx,
+		retain.GetSubject(client.config.SystemName),
+		[]byte(fullSubject),
+	)
+	if err != nil {
+		return nil, err
 	}
+	if message.Header.Get(retain.HeaderError) == retain.ErrorNotFound {
+		return nil, ErrNotFound
+	}
+	return message.Data, nil
+}
+
+func (client *Client) listSubjects(request retain.ListRequest) ([]string, error) {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("encode list request: %w", err)
+	}
+	ctx, cancel := operationContext()
+	defer cancel()
+	message, err := client.connection.RequestWithContext(
+		ctx,
+		retain.ListSubject(client.config.SystemName),
+		body,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list subjects: %w", err)
+	}
+	var response retain.ListResponse
+	if err := json.Unmarshal(message.Data, &response); err != nil {
+		return nil, fmt.Errorf("decode list response: %w", err)
+	}
+	subjects := append([]string(nil), response.Subjects...)
 	sort.Strings(subjects)
 	return subjects, nil
-}
-
-// Subscribe delivers the latest subject value, followed by future values.
-func Subscribe[V Value](
-	client *Client,
-	subject string,
-	handler func(subject string, value V) error,
-) (*Subscription, error) {
-	subject, err := validateOperation(client, subject)
-	if err != nil {
-		return nil, err
-	}
-	if handler == nil {
-		return nil, errors.New("value handler is required")
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	jsStream, err := client.jetStream.Stream(ctx, client.config.StreamName)
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf(
-			"open stream %q: %w",
-			client.config.StreamName,
-			err,
-		)
-	}
-	consumer, err := jsStream.OrderedConsumer(ctx, jetstream.OrderedConsumerConfig{
-		FilterSubjects: []string{subject},
-		DeliverPolicy:  jetstream.DeliverLastPolicy,
-	})
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf(
-			"create ordered consumer for subject %q on stream %q: %w",
-			subject,
-			client.config.StreamName,
-			err,
-		)
-	}
-
-	subscription := &Subscription{
-		cancel: cancel,
-	}
-	consume, err := consumer.Consume(
-		func(msg jetstream.Msg) {
-			var message telemetryv1.Message
-			if err := proto.Unmarshal(msg.Data(), &message); err != nil {
-				client.report(fmt.Errorf(
-					"decode subject %q from stream %q: %w",
-					msg.Subject(),
-					client.config.StreamName,
-					err,
-				))
-				return
-			}
-			value, err := decodeValue[V](message.Value)
-			if err != nil {
-				client.report(fmt.Errorf(
-					"decode value for subject %q from stream %q: %w",
-					msg.Subject(),
-					client.config.StreamName,
-					err,
-				))
-				return
-			}
-			if err := handler(msg.Subject(), value); err != nil {
-				client.report(fmt.Errorf(
-					"handle subject %q from stream %q: %w",
-					msg.Subject(),
-					client.config.StreamName,
-					err,
-				))
-			}
-		},
-		jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
-			client.report(fmt.Errorf(
-				"consume subject %q from stream %q: %w",
-				subject,
-				client.config.StreamName,
-				err,
-			))
-		}),
-	)
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf(
-			"consume subject %q from stream %q: %w",
-			subject,
-			client.config.StreamName,
-			err,
-		)
-	}
-	subscription.consume = consume
-
-	go func() {
-		<-consume.Closed()
-		cancel()
-	}()
-
-	return subscription, nil
-}
-
-// SubscribeSuffix delivers latest and future values for subjects ending in
-// suffix. Handler subjects are system-relative.
-func SubscribeSuffix[V Value](
-	client *Client,
-	suffix string,
-	handler func(subject string, value V) error,
-) (*Subscription, error) {
-	if client == nil {
-		return nil, errors.New("stream client is not initialized")
-	}
-	suffix = strings.TrimSpace(suffix)
-	if suffix == "" {
-		return nil, errors.New("subject suffix is required")
-	}
-	if handler == nil {
-		return nil, errors.New("value handler is required")
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	jsStream, err := client.jetStream.Stream(ctx, client.config.StreamName)
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf(
-			"open stream %q: %w",
-			client.config.StreamName,
-			err,
-		)
-	}
-	filter := client.config.SystemName + ".>"
-	consumer, err := jsStream.OrderedConsumer(ctx, jetstream.OrderedConsumerConfig{
-		FilterSubjects: []string{filter},
-		DeliverPolicy:  jetstream.DeliverLastPolicy,
-	})
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf(
-			"create ordered consumer for suffix %q on stream %q: %w",
-			suffix,
-			client.config.StreamName,
-			err,
-		)
-	}
-
-	subscription := &Subscription{cancel: cancel}
-	consume, err := consumer.Consume(
-		func(msg jetstream.Msg) {
-			relative, ok := client.relativeSubject(msg.Subject())
-			if !ok || !strings.HasSuffix(relative, suffix) {
-				return
-			}
-			var message telemetryv1.Message
-			if err := proto.Unmarshal(msg.Data(), &message); err != nil {
-				client.report(fmt.Errorf(
-					"decode subject %q from stream %q: %w",
-					msg.Subject(),
-					client.config.StreamName,
-					err,
-				))
-				return
-			}
-			value, err := decodeValue[V](message.Value)
-			if err != nil {
-				client.report(fmt.Errorf(
-					"decode value for subject %q from stream %q: %w",
-					msg.Subject(),
-					client.config.StreamName,
-					err,
-				))
-				return
-			}
-			if err := handler(relative, value); err != nil {
-				client.report(fmt.Errorf(
-					"handle subject %q from stream %q: %w",
-					msg.Subject(),
-					client.config.StreamName,
-					err,
-				))
-			}
-		},
-		jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
-			client.report(fmt.Errorf(
-				"consume suffix %q from stream %q: %w",
-				suffix,
-				client.config.StreamName,
-				err,
-			))
-		}),
-	)
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf(
-			"consume suffix %q from stream %q: %w",
-			suffix,
-			client.config.StreamName,
-			err,
-		)
-	}
-	subscription.consume = consume
-	go func() {
-		<-consume.Closed()
-		cancel()
-	}()
-	return subscription, nil
-}
-
-// SubscribePrefix delivers the latest and future values below prefix. Prefixes
-// are matched at a subject-token boundary. Handler subjects are system-relative.
-func SubscribePrefix[V Value](
-	client *Client,
-	prefix string,
-	handler func(subject string, value V) error,
-) (*Subscription, error) {
-	prefix, filter, err := validatePrefix(client, prefix)
-	if err != nil {
-		return nil, err
-	}
-	if handler == nil {
-		return nil, errors.New("value handler is required")
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	jsStream, err := client.jetStream.Stream(ctx, client.config.StreamName)
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf(
-			"open stream %q: %w",
-			client.config.StreamName,
-			err,
-		)
-	}
-	consumer, err := jsStream.OrderedConsumer(ctx, jetstream.OrderedConsumerConfig{
-		FilterSubjects: []string{filter},
-		DeliverPolicy:  jetstream.DeliverLastPolicy,
-	})
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf(
-			"create ordered consumer for prefix %q on stream %q: %w",
-			prefix,
-			client.config.StreamName,
-			err,
-		)
-	}
-
-	subscription := &Subscription{cancel: cancel}
-	consume, err := consumer.Consume(
-		func(msg jetstream.Msg) {
-			relative, ok := client.relativeSubject(msg.Subject())
-			if !ok || !strings.HasPrefix(relative, prefix) {
-				return
-			}
-			var message telemetryv1.Message
-			if err := proto.Unmarshal(msg.Data(), &message); err != nil {
-				client.report(fmt.Errorf(
-					"decode subject %q from stream %q: %w",
-					msg.Subject(),
-					client.config.StreamName,
-					err,
-				))
-				return
-			}
-			value, err := decodeValue[V](message.Value)
-			if err != nil {
-				client.report(fmt.Errorf(
-					"decode value for subject %q from stream %q: %w",
-					msg.Subject(),
-					client.config.StreamName,
-					err,
-				))
-				return
-			}
-			if err := handler(relative, value); err != nil {
-				client.report(fmt.Errorf(
-					"handle subject %q from stream %q: %w",
-					msg.Subject(),
-					client.config.StreamName,
-					err,
-				))
-			}
-		},
-		jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
-			client.report(fmt.Errorf(
-				"consume prefix %q from stream %q: %w",
-				prefix,
-				client.config.StreamName,
-				err,
-			))
-		}),
-	)
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf(
-			"consume prefix %q from stream %q: %w",
-			prefix,
-			client.config.StreamName,
-			err,
-		)
-	}
-	subscription.consume = consume
-	go func() {
-		<-consume.Closed()
-		cancel()
-	}()
-	return subscription, nil
-}
-
-// Stop immediately stops the subscription.
-func (subscription *Subscription) Stop() {
-	if subscription == nil || subscription.consume == nil {
-		return
-	}
-	subscription.once.Do(func() {
-		if subscription.cancel != nil {
-			subscription.cancel()
-		}
-		subscription.consume.Stop()
-	})
-}
-
-// Drain stops fetching and processes already-buffered messages.
-func (subscription *Subscription) Drain() {
-	if subscription == nil || subscription.consume == nil {
-		return
-	}
-	subscription.once.Do(subscription.consume.Drain)
-}
-
-// Closed is closed after the subscription has fully stopped.
-func (subscription *Subscription) Closed() <-chan struct{} {
-	if subscription == nil || subscription.consume == nil {
-		closed := make(chan struct{})
-		close(closed)
-		return closed
-	}
-	return subscription.consume.Closed()
-}
-
-func latestValueStreamConfig(name string, systemName string) jetstream.StreamConfig {
-	return jetstream.StreamConfig{
-		Name:              name,
-		Subjects:          append([]string(nil), systemName+".>"),
-		MaxMsgsPerSubject: 1,
-		Discard:           jetstream.DiscardOld,
-		Storage:           jetstream.FileStorage,
-		AllowDirect:       true,
-	}
 }
 
 func (client *Client) report(err error) {
@@ -782,12 +344,6 @@ func validateOperation(
 	return subject, nil
 }
 
-func isWrongLastSequence(err error) bool {
-	var apiError *jetstream.APIError
-	return errors.As(err, &apiError) &&
-		apiError.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence
-}
-
 func (client *Client) shouldAnnounce(fullSubject string) bool {
 	if client == nil || fullSubject == "" {
 		return false
@@ -804,14 +360,8 @@ func (client *Client) shouldAnnounce(fullSubject string) bool {
 	}
 	client.knownMu.Unlock()
 
-	ctx, cancel := operationContext()
-	defer cancel()
-	jsStream, err := client.jetStream.Stream(ctx, client.config.StreamName)
-	if err != nil {
-		return false
-	}
-	_, err = jsStream.GetLastMsgForSubject(ctx, fullSubject)
-	return isMsgNotFound(err)
+	_, err := client.getPayload(fullSubject)
+	return errors.Is(err, ErrNotFound)
 }
 
 func (client *Client) markKnown(fullSubject string) {
@@ -914,34 +464,10 @@ func encodeValue[V Value](value V) *telemetryv1.Value {
 
 func decodeValue[V Value](value *telemetryv1.Value) (V, error) {
 	var zero V
-	if value == nil || value.Kind == nil {
-		return zero, errors.New("telemetry value is missing")
+	decoded, err := decodeAny(value)
+	if err != nil {
+		return zero, err
 	}
-
-	var decoded any
-	switch kind := value.Kind.(type) {
-	case *telemetryv1.Value_IntValue:
-		decoded = kind.IntValue
-	case *telemetryv1.Value_FloatValue:
-		decoded = kind.FloatValue
-	case *telemetryv1.Value_StringValue:
-		decoded = kind.StringValue
-	case *telemetryv1.Value_BoolValue:
-		decoded = kind.BoolValue
-	case *telemetryv1.Value_BytesValue:
-		decoded = append([]byte(nil), kind.BytesValue...)
-	case *telemetryv1.Value_IntArray:
-		decoded = append([]int64(nil), kind.IntArray.GetValues()...)
-	case *telemetryv1.Value_FloatArray:
-		decoded = append([]float64(nil), kind.FloatArray.GetValues()...)
-	case *telemetryv1.Value_StringArray:
-		decoded = append([]string(nil), kind.StringArray.GetValues()...)
-	case *telemetryv1.Value_BoolArray:
-		decoded = append([]bool(nil), kind.BoolArray.GetValues()...)
-	default:
-		return zero, fmt.Errorf("unsupported protobuf value type %T", value.Kind)
-	}
-
 	typed, ok := decoded.(V)
 	if !ok {
 		return zero, fmt.Errorf(
@@ -951,6 +477,38 @@ func decodeValue[V Value](value *telemetryv1.Value) (V, error) {
 		)
 	}
 	return typed, nil
+}
+
+func decodeAny(value *telemetryv1.Value) (any, error) {
+	if value == nil || value.Kind == nil {
+		return nil, errors.New("telemetry value is missing")
+	}
+	switch kind := value.Kind.(type) {
+	case *telemetryv1.Value_IntValue:
+		return kind.IntValue, nil
+	case *telemetryv1.Value_FloatValue:
+		return kind.FloatValue, nil
+	case *telemetryv1.Value_StringValue:
+		return kind.StringValue, nil
+	case *telemetryv1.Value_BoolValue:
+		return kind.BoolValue, nil
+	case *telemetryv1.Value_BytesValue:
+		return append([]byte(nil), kind.BytesValue...), nil
+	case *telemetryv1.Value_IntArray:
+		return append([]int64(nil), kind.IntArray.GetValues()...), nil
+	case *telemetryv1.Value_FloatArray:
+		return append([]float64(nil), kind.FloatArray.GetValues()...), nil
+	case *telemetryv1.Value_StringArray:
+		return append([]string(nil), kind.StringArray.GetValues()...), nil
+	case *telemetryv1.Value_BoolArray:
+		return append([]bool(nil), kind.BoolArray.GetValues()...), nil
+	default:
+		return nil, fmt.Errorf("unsupported protobuf value type %T", value.Kind)
+	}
+}
+
+func isMsgNotFound(err error) bool {
+	return errors.Is(err, ErrNotFound)
 }
 
 func operationContext() (context.Context, context.CancelFunc) {

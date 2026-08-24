@@ -26,7 +26,7 @@ type Store interface {
 	) (Subscription, error)
 }
 
-// StreamStore adapts the shared JetStream client to Store.
+// StreamStore adapts the shared stream client to Store.
 type StreamStore struct {
 	client *stream.Client
 }

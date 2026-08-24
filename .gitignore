@@ -6,6 +6,10 @@ coverage.*
 
 # Runtime data
 /nats-data/
+/retain-data/
+*.db
+*.db-wal
+*.db-shm
 
 # Local configuration and secrets
 .env

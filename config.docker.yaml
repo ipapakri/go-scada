@@ -1,3 +1,2 @@
 nats_url: nats://192.168.1.213:4222
-stream_name: EVENTS
 system_name: factory1

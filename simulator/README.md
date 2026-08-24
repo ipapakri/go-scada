@@ -2,7 +2,7 @@
 
 The simulator models a small process plant and exposes its values through three
 independent Modbus TCP servers. The normal `modbus-service` polls those servers,
-publishes telemetry to NATS JetStream, and feeds the designer and alert service.
+publishes telemetry to NATS, and feeds the designer and alert service.
 
 ## Start and stop
 
@@ -31,12 +31,12 @@ Stop the stack with:
 make simulator-down
 ```
 
-The `simulation` Compose profile starts NATS, stream bootstrap, descriptor
+The `simulation` Compose profile starts NATS, the retain service, descriptor
 seeding, Node-RED, the Modbus poller, the alert service, and the designer.
 Descriptor seeding is idempotent and runs each time the profile starts. By
 default it also stamps 100 identical plant copies (`plant.001` … `plant.100`)
 that reuse the original three Modbus connections, for load on the poller, alert
-service, and stream. Override with `SIMULATOR_REPLICAS=0 make simulator-up`
+service, and retain store. Override with `SIMULATOR_REPLICAS=0 make simulator-up`
 to seed only the operator plant.
 
 ## Simulated controllers

@@ -1,7 +1,6 @@
 package stream
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -13,8 +12,9 @@ import (
 	"time"
 
 	telemetryv1 "go-scada/gen/go/go_scada/telemetry/v1"
+	"go-scada/retain"
 
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nats.go"
 )
 
 func TestLoadConfig(t *testing.T) {
@@ -25,7 +25,6 @@ func TestLoadConfig(t *testing.T) {
 		path,
 		[]byte(
 			"nats_url: nats://example.test:4222\n"+
-				"stream_name: TEST_STREAM\n"+
 				"system_name: ' test-system '\n",
 		),
 		0o600,
@@ -39,9 +38,6 @@ func TestLoadConfig(t *testing.T) {
 	}
 	if config.NATSURL != "nats://example.test:4222" {
 		t.Errorf("NATSURL = %q", config.NATSURL)
-	}
-	if config.StreamName != "TEST_STREAM" {
-		t.Errorf("StreamName = %q", config.StreamName)
 	}
 	if config.SystemName != "test-system" {
 		t.Errorf("SystemName = %q", config.SystemName)
@@ -57,15 +53,11 @@ func TestLoadConfigValidation(t *testing.T) {
 	}{
 		{
 			name:    "missing NATS URL",
-			content: "stream_name: TEST_STREAM\nsystem_name: test-system\n",
-		},
-		{
-			name:    "missing stream name",
-			content: "nats_url: nats://localhost:4222\nsystem_name: test-system\n",
+			content: "system_name: test-system\n",
 		},
 		{
 			name:    "missing system name",
-			content: "nats_url: nats://localhost:4222\nstream_name: TEST_STREAM\n",
+			content: "nats_url: nats://localhost:4222\n",
 		},
 	}
 
@@ -163,34 +155,6 @@ func TestValidatePrefix(t *testing.T) {
 	}
 }
 
-func TestLatestValueStreamConfig(t *testing.T) {
-	t.Parallel()
-
-	config := latestValueStreamConfig("TEST_STREAM", "test-system")
-	if config.Name != "TEST_STREAM" {
-		t.Errorf("Name = %q", config.Name)
-	}
-	if len(config.Subjects) != 1 ||
-		config.Subjects[0] != "test-system.>" {
-		t.Errorf("Subjects = %v", config.Subjects)
-	}
-	if config.MaxMsgsPerSubject != 1 {
-		t.Errorf("MaxMsgsPerSubject = %d", config.MaxMsgsPerSubject)
-	}
-	if config.Discard != jetstream.DiscardOld {
-		t.Errorf("Discard = %v", config.Discard)
-	}
-	if config.Storage != jetstream.FileStorage {
-		t.Errorf("Storage = %v", config.Storage)
-	}
-	if !config.AllowDirect {
-		t.Error("AllowDirect = false")
-	}
-	if config.NoAck {
-		t.Error("NoAck = true")
-	}
-}
-
 func TestValueRoundTrips(t *testing.T) {
 	t.Parallel()
 
@@ -273,19 +237,35 @@ func TestClientErrorHandler(t *testing.T) {
 func TestClientLatestValueAndSubscribe(t *testing.T) {
 	natsURL := os.Getenv("NATS_TEST_URL")
 	if natsURL == "" {
-		t.Skip("set NATS_TEST_URL to run the JetStream integration test")
+		t.Skip("set NATS_TEST_URL to run the NATS integration test")
 	}
 
-	streamName := fmt.Sprintf("TEST_LATEST_%d", time.Now().UnixNano())
+	systemName := fmt.Sprintf("sys%d", time.Now().UnixNano())
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	config := fmt.Sprintf(
-		"nats_url: %s\nstream_name: %s\nsystem_name: test-system\n",
+		"nats_url: %s\nsystem_name: %s\n",
 		natsURL,
-		streamName,
+		systemName,
 	)
 	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
+
+	store, err := retain.Open(filepath.Join(t.TempDir(), "retain.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	connection, err := nats.Connect(natsURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	server, err := retain.Listen(connection, store, systemName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
 
 	reported := make(chan error, 1)
 	client, err := New(path, WithErrorHandler(func(err error) {
@@ -299,32 +279,18 @@ func TestClientLatestValueAndSubscribe(t *testing.T) {
 	}
 	defer client.Close()
 
-	if _, err := client.jetStream.Stream(
-		context.Background(),
-		streamName,
-	); !errors.Is(err, jetstream.ErrStreamNotFound) {
-		t.Fatalf("stream before CreateStream() error = %v", err)
-	}
-	if err := client.CreateStream(); err != nil {
-		t.Fatal(err)
-	}
-	if err := client.CreateStream(); err != nil {
-		t.Fatalf("repeated CreateStream() error = %v", err)
-	}
-	defer client.jetStream.DeleteStream(context.Background(), streamName)
-
 	if err := Create[string](client, "test.initial"); err != nil {
 		t.Fatal(err)
 	}
-	initial, err := Get[string](client, "test.initial")
-	if err != nil {
-		t.Fatal(err)
-	}
+	initial := waitGet[string](t, client, "test.initial")
 	if initial != "" {
 		t.Fatalf("initial value = %q, want the string zero value", initial)
 	}
 	if err := Set(client, "test.initial", "existing"); err != nil {
 		t.Fatal(err)
+	}
+	if got := waitGet[string](t, client, "test.initial"); got != "existing" {
+		t.Fatalf("value after Set = %q, want %q", got, "existing")
 	}
 	if err := Create[string](client, "test.initial"); err != nil {
 		t.Fatal(err)
@@ -340,10 +306,7 @@ func TestClientLatestValueAndSubscribe(t *testing.T) {
 		}()
 	}
 	createGroup.Wait()
-	initial, err = Get[string](client, "test.initial")
-	if err != nil {
-		t.Fatal(err)
-	}
+	initial = waitGet[string](t, client, "test.initial")
 	if initial != "existing" {
 		t.Fatalf("initial value = %q, want %q", initial, "existing")
 	}
@@ -357,18 +320,12 @@ func TestClientLatestValueAndSubscribe(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	latestA, err := Get[string](client, "test.point.a")
-	if err != nil {
-		t.Fatal(err)
-	}
+	latestA := waitGet[string](t, client, "test.point.a")
 	if latestA != "a2" {
 		t.Fatalf("latest A = %q, want %q", latestA, "a2")
 	}
 
-	latestB, err := Get[string](client, "test.point.b")
-	if err != nil {
-		t.Fatal(err)
-	}
+	latestB := waitGet[string](t, client, "test.point.b")
 	if latestB != "b1" {
 		t.Fatalf("latest B = %q, want %q", latestB, "b1")
 	}
@@ -382,17 +339,20 @@ func TestClientLatestValueAndSubscribe(t *testing.T) {
 	if err := Set(client, "sensor1.value", 12.5); err != nil {
 		t.Fatal(err)
 	}
-	addressSubjects, err := ListSubjects(client, ".address")
-	if err != nil {
-		t.Fatal(err)
-	}
 	wantSubjects := []string{
 		"area.sensor2.value.address",
 		"sensor1.value.address",
 	}
-	if !reflect.DeepEqual(addressSubjects, wantSubjects) {
-		t.Fatalf("address subjects = %v, want %v", addressSubjects, wantSubjects)
-	}
+	waitUntil(t, func() error {
+		addressSubjects, err := ListSubjects(client, ".address")
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(addressSubjects, wantSubjects) {
+			return fmt.Errorf("address subjects = %v, want %v", addressSubjects, wantSubjects)
+		}
+		return nil
+	})
 
 	addressUpdates := make(chan string, 4)
 	addressSubscription, err := SubscribeSuffix(
@@ -407,6 +367,8 @@ func TestClientLatestValueAndSubscribe(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer addressSubscription.Stop()
+	assertReceived(t, addressUpdates, `area.sensor2.value.address={"driver":"modbus"}`)
+	assertReceived(t, addressUpdates, `sensor1.value.address={"driver":"modbus"}`)
 	if err := Set(client, "deep.area.sensor3.value.address", "new-address"); err != nil {
 		t.Fatal(err)
 	}
@@ -425,21 +387,24 @@ func TestClientLatestValueAndSubscribe(t *testing.T) {
 	if err := Set(client, "prefix.area2.outside", "outside"); err != nil {
 		t.Fatal(err)
 	}
-	prefixSubjects, err := ListSubjectsPrefix(client, " prefix.area ")
-	if err != nil {
-		t.Fatal(err)
-	}
 	wantPrefixSubjects := []string{
 		"prefix.area.alpha",
 		"prefix.area.beta",
 	}
-	if !reflect.DeepEqual(prefixSubjects, wantPrefixSubjects) {
-		t.Fatalf(
-			"prefix subjects = %v, want %v",
-			prefixSubjects,
-			wantPrefixSubjects,
-		)
-	}
+	waitUntil(t, func() error {
+		prefixSubjects, err := ListSubjectsPrefix(client, " prefix.area ")
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(prefixSubjects, wantPrefixSubjects) {
+			return fmt.Errorf(
+				"prefix subjects = %v, want %v",
+				prefixSubjects,
+				wantPrefixSubjects,
+			)
+		}
+		return nil
+	})
 
 	prefixUpdates := make(chan string, 3)
 	prefixSubscription, err := SubscribePrefix(
@@ -455,6 +420,7 @@ func TestClientLatestValueAndSubscribe(t *testing.T) {
 	}
 	defer prefixSubscription.Stop()
 	assertReceived(t, prefixUpdates, "prefix.area.alpha=alpha")
+	assertReceived(t, prefixUpdates, "prefix.area.beta=beta")
 	if err := Set(client, "prefix.area.gamma", "gamma"); err != nil {
 		t.Fatal(err)
 	}
@@ -473,11 +439,12 @@ func TestClientLatestValueAndSubscribe(t *testing.T) {
 		client,
 		"test.point.a",
 		func(subject string, value string) error {
-			if subject != "test-system.test.point.a" {
+			wantSubject := systemName + ".test.point.a"
+			if subject != wantSubject {
 				t.Fatalf(
 					"subject = %q, want %q",
 					subject,
-					"test-system.test.point.a",
+					wantSubject,
 				)
 			}
 			received <- value
@@ -528,4 +495,32 @@ func assertReceived(t *testing.T, received <-chan string, want string) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("timed out waiting for %q", want)
 	}
+}
+
+func waitGet[V Value](t *testing.T, client *Client, subject string) V {
+	t.Helper()
+	var value V
+	waitUntil(t, func() error {
+		got, err := Get[V](client, subject)
+		if err != nil {
+			return err
+		}
+		value = got
+		return nil
+	})
+	return value
+}
+
+func waitUntil(t *testing.T, check func() error) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var last error
+	for time.Now().Before(deadline) {
+		last = check()
+		if last == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal(last)
 }

@@ -1,9 +1,9 @@
 # go-scada
 
-Go SCADA services backed by a NATS JetStream latest-value stream. The Modbus
-service discovers connection definitions on `*.config`, point definitions on
-`*.address`, and publishes each point's live value to the address subject
-without the `.address` suffix.
+Go SCADA services backed by core NATS, with last values stored by a retain
+service in SQLite. The Modbus service discovers connection definitions on
+`*.config`, point definitions on `*.address`, and publishes each point's live
+value to the address subject without the `.address` suffix.
 
 ## Modbus web designer
 
@@ -17,7 +17,7 @@ Requirements: Go, Node.js/npm, Docker, and Docker Compose.
 
 ```sh
 docker compose up -d nats
-go run ./bootstrap
+go run ./retain-service
 go run ./modbus-service
 ```
 
@@ -43,12 +43,13 @@ go run ./designer-service -config /path/to/config.yaml
 docker compose up --build
 ```
 
-This starts NATS and serves the compiled designer at `http://localhost:8080`.
+This starts NATS, the retain service, and serves the compiled designer at
+`http://localhost:8080`.
 
 ### Run with the Node-RED Modbus simulator
 
-The simulation profile adds stream bootstrap, three Node-RED Modbus TCP
-servers, automatic descriptor seeding, the Modbus poller, and the alert service:
+The simulation profile adds three Node-RED Modbus TCP servers, automatic
+descriptor seeding, the Modbus poller, and the alert service:
 
 ```sh
 make simulator-up
@@ -245,7 +246,7 @@ for a pending matching episode and ignores all other modified fields,
 republishing its canonical state. Acknowledging a summary acknowledges its
 active or pending member tree.
 
-The stream stores latest state only: the alert service provides no event
+The retain service stores latest state only: the alert service provides no event
 history. The alert service also has no designer UI; configure it by publishing
 JSON to the subjects above.
 

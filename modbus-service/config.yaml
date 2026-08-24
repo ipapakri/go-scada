@@ -1,3 +1,2 @@
 nats_url: nats://localhost:4222
-stream_name: EVENTS
 system_name: factory1

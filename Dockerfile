@@ -11,7 +11,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/designer-service ./designer-service && \
-    CGO_ENABLED=0 go build -o /out/bootstrap ./bootstrap && \
+    CGO_ENABLED=0 go build -o /out/retain-service ./retain-service && \
     CGO_ENABLED=0 go build -o /out/modbus-service ./modbus-service && \
     CGO_ENABLED=0 go build -o /out/alert-service ./alert-service && \
     CGO_ENABLED=0 go build -o /out/simulator-seed ./simulator
@@ -23,10 +23,10 @@ COPY --from=ui-build /src/designer-ui/dist /app/ui
 EXPOSE 8080
 ENTRYPOINT ["/app/designer-service", "-listen", "0.0.0.0:8080", "-static", "/app/ui"]
 
-FROM alpine:latest AS bootstrap
+FROM alpine:latest AS retain-service
 WORKDIR /app
-COPY --from=go-build /out/bootstrap /app/bootstrap
-ENTRYPOINT ["/app/bootstrap"]
+COPY --from=go-build /out/retain-service /app/retain-service
+ENTRYPOINT ["/app/retain-service"]
 
 FROM alpine:latest AS modbus-service
 WORKDIR /app
