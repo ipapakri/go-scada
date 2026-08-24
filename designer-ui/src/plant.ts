@@ -30,6 +30,12 @@ export function listPlants(addresses: Address[]) {
   })
 }
 
+export function listTankPlants(addresses: Address[]) {
+  const plants = listPlants(addresses)
+  const numbered = plants.filter((id) => id !== OPERATOR_PLANT_ID)
+  return numbered.length > 0 ? numbered : plants
+}
+
 export function plantLabel(plantId: string) {
   return plantId === OPERATOR_PLANT_ID ? 'Operator plant' : `Plant ${plantId}`
 }
@@ -105,4 +111,25 @@ export function alertStatus(state: AlertState | undefined) {
   if (state.active) return 'active'
   if (state.pending) return 'pending'
   return 'normal'
+}
+
+export function readTank(values: Record<string, LiveEvent>, plantId: string) {
+  const point = (path: string) => plantTelemetry(plantId, path)
+  return {
+    level: readNumber(values, point('tank.level')),
+    temperature: readNumber(values, point('tank.temperature')),
+    pressure: readNumber(values, point('tank.pressure')),
+    high: readBool(values, point('tank.level_high')),
+    low: readBool(values, point('tank.level_low')),
+    sensorBad: readBool(values, point('tank.sensor_bad')),
+  }
+}
+
+export function tankIsAlarm(liveStates: Record<string, AlertState>, plantId: string) {
+  const point = (path: string) => plantTelemetry(plantId, path)
+  return (
+    alertStatus(liveStates[`${point('tank')}.alert`]) === 'active' ||
+    alertStatus(liveStates[`${point('tank.level_high')}.alert`]) === 'active' ||
+    alertStatus(liveStates[`${point('tank.temperature')}.alert`]) === 'active'
+  )
 }

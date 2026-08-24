@@ -24,7 +24,7 @@ import {
   type Encoding,
   type Register,
 } from './models'
-import { listPlants, OPERATOR_PLANT_ID, plantAddresses, plantAlerts } from './plant'
+import { listTankPlants, OPERATOR_PLANT_ID, plantAddresses, plantAlerts } from './plant'
 import { useLiveAlerts } from './useLiveAlerts'
 import { useLiveValues } from './useLiveValues'
 
@@ -426,27 +426,37 @@ function App() {
   const [busy, setBusy] = useState('')
   const [error, setError] = useState<unknown>(null)
   const [selectedPlantId, setSelectedPlantId] = useState(OPERATOR_PLANT_ID)
-  const plants = useMemo(() => listPlants(addresses), [addresses])
+  const tankPlants = useMemo(() => listTankPlants(addresses), [addresses])
   const scopedAddresses = useMemo(
     () => plantAddresses(addresses, selectedPlantId),
     [addresses, selectedPlantId],
   )
+  const allPlantAddresses = useMemo(() => plantAddresses(addresses), [addresses])
   const scopedAlerts = useMemo(
     () => plantAlerts(alerts, selectedPlantId),
     [alerts, selectedPlantId],
   )
+  const allPlantAlerts = useMemo(() => plantAlerts(alerts), [alerts])
   const { values, status: liveStatus } = useLiveValues(
-    activeView === 'addresses' ? addresses : scopedAddresses,
+    activeView === 'addresses'
+      ? addresses
+      : activeView === 'plant'
+        ? allPlantAddresses
+        : scopedAddresses,
   )
   const { states: liveAlertStates, status: alarmLiveStatus } = useLiveAlerts(
-    activeView === 'alarms' ? alerts : scopedAlerts,
+    activeView === 'alarms'
+      ? alerts
+      : activeView === 'plant'
+        ? allPlantAlerts
+        : scopedAlerts,
   )
 
   useEffect(() => {
-    if (plants.length > 0 && !plants.includes(selectedPlantId)) {
-      setSelectedPlantId(plants[0])
+    if (tankPlants.length > 0 && !tankPlants.includes(selectedPlantId)) {
+      setSelectedPlantId(tankPlants[0])
     }
-  }, [plants, selectedPlantId])
+  }, [tankPlants, selectedPlantId])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -648,7 +658,7 @@ function App() {
   const isAlarmWorkspace = activeView.startsWith('alert-') || activeView === 'alarms'
   const liveIndicator = isAlarmWorkspace ? alarmLiveStatus : liveStatus
   const hero = {
-    plant: ['Operator workspace', 'Plant overview', 'Watch live tank, pump, valve, and utility values from the simulator stream.'],
+    plant: ['Operator workspace', 'Plant overview', 'Watch live values from all simulated tanks, pumps, valves, and utilities.'],
     alarms: ['Operator workspace', 'Alarm overview', 'Monitor current alarm episodes and acknowledge conditions requiring attention.'],
     'alert-properties': ['Alarm configuration', 'Presentation properties', 'Manage reusable priorities, colors, labels, and acknowledgement policies.'],
     'alert-configs': ['Alarm configuration', 'Alert definitions', 'Build binary, value-range, and summary alarm evaluations.'],

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -35,8 +36,8 @@ func TestEmbeddedManifestIsValid(t *testing.T) {
 	if addresses != 28 {
 		t.Errorf("addresses = %d, want 28", addresses)
 	}
-	if alerts != 3 {
-		t.Errorf("alerts = %d, want 3", alerts)
+	if alerts != 8 {
+		t.Errorf("alerts = %d, want 8", alerts)
 	}
 }
 
@@ -107,6 +108,25 @@ func TestExpandReplicasStampsUniqueCopies(t *testing.T) {
 	if strings.Contains(string(replica.Value), `Modbus.SimulatorTank.001.config`) {
 		t.Fatalf("replica cloned a connection: %s", replica.Value)
 	}
+	if got := addressOffset(t, replica.Value); got != 0 {
+		t.Fatalf("plant.001 tank level address = %d, want 0", got)
+	}
+
+	if got := addressOffset(t, bySubject["plant.002.tank.level.address"].Value); got != 20 {
+		t.Fatalf("plant.002 tank level address = %d, want 20", got)
+	}
+	if got := addressOffset(t, bySubject["plant.002.tank.level_high.address"].Value); got != 3 {
+		t.Fatalf("plant.002 level_high address = %d, want 3", got)
+	}
+	if got := addressOffset(t, bySubject["plant.002.valve.inlet.open.address"].Value); got != 2 {
+		t.Fatalf("plant.002 inlet coil address = %d, want 2", got)
+	}
+	if got := addressOffset(t, bySubject["plant.002.pump1.speed.address"].Value); got != 28 {
+		t.Fatalf("plant.002 pump speed address = %d, want 28", got)
+	}
+	if got := addressOffset(t, bySubject["plant.002.utility.process_flow.address"].Value); got != 16 {
+		t.Fatalf("plant.002 utility flow address = %d, want 16", got)
+	}
 
 	var connections int
 	for subject := range bySubject {
@@ -149,4 +169,51 @@ func TestExpandReplicasRejectsInvalidCounts(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "replicas must be <=") {
 		t.Fatalf("expected max replica error, got %v", err)
 	}
+}
+
+func TestExpandReplicasMapsTenthPlantRegisters(t *testing.T) {
+	data, err := descriptorFiles.ReadFile("config/descriptors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := parseManifest(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := expandReplicas(template, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bySubject := map[string]manifestEntry{}
+	for _, entry := range entries {
+		bySubject[entry.Subject] = entry
+	}
+	if got := addressOffset(t, bySubject["plant.010.tank.level.address"].Value); got != 180 {
+		t.Fatalf("plant.010 tank level address = %d, want 180", got)
+	}
+	if got := addressOffset(t, bySubject["plant.010.tank.level_high.address"].Value); got != 27 {
+		t.Fatalf("plant.010 level_high address = %d, want 27", got)
+	}
+	if got := addressOffset(t, bySubject["plant.010.valve.inlet.open.address"].Value); got != 18 {
+		t.Fatalf("plant.010 inlet coil address = %d, want 18", got)
+	}
+	if got := addressOffset(t, bySubject["plant.010.pump1.speed.address"].Value); got != 252 {
+		t.Fatalf("plant.010 pump speed address = %d, want 252", got)
+	}
+	if got := addressOffset(t, bySubject["plant.010.utility.process_flow.address"].Value); got != 144 {
+		t.Fatalf("plant.010 utility flow address = %d, want 144", got)
+	}
+}
+
+func addressOffset(t *testing.T, raw json.RawMessage) int {
+	t.Helper()
+	var payload struct {
+		Config struct {
+			Address int `json:"address"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	return payload.Config.Address
 }

@@ -31,8 +31,8 @@ func main() {
 	)
 	replicas := flag.Int(
 		"replicas",
-		100,
-		"identical plant copies to seed alongside the operator plant",
+		10,
+		"plant copies to seed alongside the operator plant, mapped onto the simulator register blocks",
 	)
 	flag.Parse()
 

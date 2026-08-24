@@ -2,15 +2,16 @@ import { useMemo, useState } from 'react'
 import { errorMessage } from './api'
 import type { Address, AlertRecord, AlertState, LiveEvent } from './models'
 import {
-  alertStatus,
   clampPercent,
   formatNumber,
-  listPlants,
+  listTankPlants,
   plantAlerts,
   plantLabel,
   plantTelemetry,
   readBool,
   readNumber,
+  readTank,
+  tankIsAlarm,
 } from './plant'
 
 interface PlantViewProps {
@@ -124,6 +125,26 @@ function Pump({
   )
 }
 
+function TankGraphic({
+  level,
+  compact = false,
+}: {
+  level: number | undefined
+  compact?: boolean
+}) {
+  return (
+    <div
+      className={`tank-shell ${compact ? 'compact' : ''}`}
+      role={compact ? undefined : 'img'}
+      aria-hidden={compact || undefined}
+      aria-label={compact ? undefined : `Tank level ${formatNumber(level, 1, '%')}`}
+    >
+      <div className="tank-fill" style={{ height: `${clampPercent(level)}%` }} />
+      <strong>{formatNumber(level, 1, '%')}</strong>
+    </div>
+  )
+}
+
 export function PlantView({
   addresses,
   values,
@@ -135,19 +156,22 @@ export function PlantView({
 }: PlantViewProps) {
   const [busy, setBusy] = useState('')
   const [error, setError] = useState<unknown>(null)
-  const plants = useMemo(() => listPlants(addresses), [addresses])
+  const plants = useMemo(() => listTankPlants(addresses), [addresses])
   const hasPlant = plants.length > 0
   const configuredAlerts = plantAlerts(alerts, selectedPlantId)
   const point = (path: string) => plantTelemetry(selectedPlantId, path)
 
-  const tank = {
-    level: readNumber(values, point('tank.level')),
-    temperature: readNumber(values, point('tank.temperature')),
-    pressure: readNumber(values, point('tank.pressure')),
-    high: readBool(values, point('tank.level_high')),
-    low: readBool(values, point('tank.level_low')),
-    sensorBad: readBool(values, point('tank.sensor_bad')),
-  }
+  const tanks = useMemo(
+    () =>
+      plants.map((plantId) => ({
+        plantId,
+        tank: readTank(values, plantId),
+        alarm: tankIsAlarm(liveStates, plantId),
+      })),
+    [liveStates, plants, values],
+  )
+
+  const tank = readTank(values, selectedPlantId)
   const inlet = {
     open: readBool(values, point('valve.inlet.open')),
     position: readNumber(values, point('valve.inlet.position')),
@@ -185,12 +209,7 @@ export function PlantView({
     flowLow: readBool(values, point('utility.flow_low')),
   }
 
-  const tankLevelAlert = liveStates[`${point('tank.level_high')}.alert`]
-  const tankTempAlert = liveStates[`${point('tank.temperature')}.alert`]
-  const tankSummary = liveStates[`${point('tank')}.alert`]
-  const tankAlarm = alertStatus(tankSummary) === 'active' ||
-    alertStatus(tankLevelAlert) === 'active' ||
-    alertStatus(tankTempAlert) === 'active'
+  const tankAlarm = tankIsAlarm(liveStates, selectedPlantId)
 
   const openAlarms = useMemo(
     () =>
@@ -227,22 +246,34 @@ export function PlantView({
       <div className="plant-toolbar">
         <div>
           <strong>{plantLabel(selectedPlantId)}</strong>
-          <span>{plants.length} plant{plants.length === 1 ? '' : 's'} available</span>
+          <span>{plants.length} tank{plants.length === 1 ? '' : 's'} available</span>
         </div>
-        <label className="plant-picker">
-          Plant
-          <select
-            aria-label="Plant"
-            value={selectedPlantId}
-            onChange={(event) => onSelectPlant(event.target.value)}
-          >
-            {plants.map((plantId) => (
-              <option key={plantId || 'operator'} value={plantId}>
-                {plantLabel(plantId)}
-              </option>
-            ))}
-          </select>
-        </label>
+      </div>
+
+      <div className="tank-farm" role="listbox" aria-label="Tanks">
+        {tanks.map(({ plantId, tank: item, alarm }) => {
+          const selected = plantId === selectedPlantId
+          const name = plantLabel(plantId)
+          return (
+            <button
+              key={plantId || 'operator'}
+              type="button"
+              role="option"
+              aria-selected={selected}
+              aria-label={name}
+              className={`tank-chip ${selected ? 'selected' : ''} ${alarm ? 'alarm' : ''}`}
+              onClick={() => onSelectPlant(plantId)}
+            >
+              <span>{name}</span>
+              <TankGraphic level={item.level} compact />
+              <div className="plant-lamps">
+                <Lamp label="High" value={item.high} kind="fault" />
+                <Lamp label="Low" value={item.low} kind="fault" />
+                <Lamp label="Sensor" value={item.sensorBad} kind="fault" />
+              </div>
+            </button>
+          )
+        })}
       </div>
 
       {Boolean(error) && (
@@ -292,7 +323,7 @@ export function PlantView({
         <div className="plant-pipe" aria-hidden="true" />
         <article className={`plant-card tank ${tankAlarm ? 'alarm' : ''}`}>
           <header>
-            <h3>Process tank</h3>
+            <h3>{plantLabel(selectedPlantId)} tank</h3>
             <div className="plant-lamps">
               <Lamp label="High" value={tank.high} kind="fault" />
               <Lamp label="Low" value={tank.low} kind="fault" />
@@ -300,17 +331,7 @@ export function PlantView({
             </div>
           </header>
           <div className="tank-body">
-            <div
-              className="tank-shell"
-              role="img"
-              aria-label={`Tank level ${formatNumber(tank.level, 1, '%')}`}
-            >
-              <div
-                className="tank-fill"
-                style={{ height: `${clampPercent(tank.level)}%` }}
-              />
-              <strong>{formatNumber(tank.level, 1, '%')}</strong>
-            </div>
+            <TankGraphic level={tank.level} />
             <div className="plant-metrics stacked">
               <Metric label="Temperature" value={tank.temperature} unit="°C" />
               <Metric label="Pressure" value={tank.pressure} unit="bar" />

@@ -596,6 +596,54 @@ main {
   font-size: 0.72rem;
 }
 
+.tank-farm {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 10px;
+}
+
+.tank-chip {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tank-chip > span {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.tank-chip.selected {
+  border-color: #5eead4;
+  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.14);
+}
+
+.tank-chip.alarm {
+  border-color: #fda4af;
+}
+
+.tank-chip.selected.alarm {
+  box-shadow: 0 0 0 3px rgba(190, 18, 60, 0.12);
+}
+
+.tank-chip .plant-lamps {
+  gap: 4px;
+}
+
+.tank-chip .plant-lamp {
+  padding: 2px 6px;
+  font-size: 0.58rem;
+}
+
 .plant-picker {
   display: flex;
   align-items: center;
@@ -819,6 +867,16 @@ main {
   border: 2px solid #5eead4;
   border-radius: 0 0 22px 22px;
   background: linear-gradient(180deg, #f8fffe, #e6f7f5);
+}
+
+.tank-shell.compact {
+  min-height: 72px;
+  border-width: 1px;
+  border-radius: 0 0 12px 12px;
+}
+
+.tank-shell.compact strong {
+  font-size: 0.82rem;
 }
 
 .tank-fill {
@@ -1318,7 +1376,8 @@ main {
   .plant-flow,
   .plant-grid,
   .pump-row,
-  .tank-body {
+  .tank-body,
+  .tank-farm {
     grid-template-columns: 1fr;
   }
 

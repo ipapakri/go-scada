@@ -43,10 +43,11 @@ make simulator-down
 The `simulation` Compose profile starts NATS, the retain service, descriptor
 seeding, Node-RED, the Modbus poller, the alert service, and the designer.
 Descriptor seeding is idempotent and runs each time the profile starts. By
-default it also stamps 100 identical plant copies (`plant.001` … `plant.100`)
-that reuse the original three Modbus connections, for load on the poller, alert
-service, and retain store. Override with `SIMULATOR_REPLICAS=0 make simulator-up`
-to seed only the operator plant.
+default it stamps 10 plant copies (`plant.001` … `plant.010`) that reuse the
+original three Modbus connections and map each copy onto that plant's register
+block (`plant.001` is plant 1, `plant.010` is plant 10). Set
+`SIMULATOR_REPLICAS` to match `SIMULATOR_INSTANCES` when you change the count.
+`SIMULATOR_REPLICAS=0 make simulator-up` seeds only the operator plant.
 
 ## Simulated controllers
 
@@ -101,10 +102,9 @@ Endpoint `localhost:1504`, configured as unit ID 3. Each plant occupies a
 - Coil `n-1`: cooling valve open
 
 The complete Modbus-to-subject mapping is in
-`simulator/config/descriptors.json`. Seeded SCADA addresses currently follow
-plant 1 (the original register block). Plants 2-N are live on the three PLCs
-and the Node-RED dashboard; they are not yet published as extra `plant.*`
-points.
+`simulator/config/descriptors.json`. The operator plant (`plant.tank.*`) and
+`plant.001.*` both follow plant 1's register block. `plant.002.*` through
+`plant.NNN.*` are offset by that plant's analog, discrete, and coil strides.
 
 ## Process behavior and controls
 
@@ -140,7 +140,7 @@ go run ./scada-cli get -type bool plant.pump1.running
 go run ./scada-cli get -type float64 plant.utility.conductivity
 go run ./scada-cli get plant.tank.temperature.alert
 go run ./scada-cli get -type float64 plant.001.tank.level
-go run ./scada-cli get plant.100.tank.alert
+go run ./scada-cli get plant.010.tank.alert
 ```
 
 To inspect service status and logs:
