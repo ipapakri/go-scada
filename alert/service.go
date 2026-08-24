@@ -15,22 +15,35 @@ import (
 	"go-scada/stream"
 )
 
+const (
+	configsWatch = "alert-configs"
+	statesWatch  = "alert-states"
+	inputsWatch  = "alert-inputs"
+)
+
 type serviceSubscription interface {
 	Stop()
 	Closed() <-chan struct{}
 }
 
-// serviceStream deliberately has typed subscription methods: a value alert
-// never accepts a numerically-convertible value of the wrong stream type.
+type exactWatch interface {
+	serviceSubscription
+	Add(string) error
+	Watch(string) error
+	Remove(string) error
+}
+
+// serviceStream isolates the alert service from the shared stream. Exact
+// watches deliver untyped values; binary and value alerts still reject the
+// wrong Go type at evaluation time.
 type serviceStream interface {
 	ListSuffix(string) ([]string, error)
 	ListPrefix(string) ([]string, error)
 	GetString(string) (string, error)
-	SubscribeSuffixString(string, func(string, string) error) (serviceSubscription, error)
+	GetAny(string) (any, error)
 	SubscribePrefixString(string, func(string, string) error) (serviceSubscription, error)
-	SubscribeBool(string, func(string, bool) error) (serviceSubscription, error)
-	SubscribeInt64(string, func(string, int64) error) (serviceSubscription, error)
-	SubscribeFloat64(string, func(string, float64) error) (serviceSubscription, error)
+	SubscribeCreated(func(stream.SubjectCreated) error) (serviceSubscription, error)
+	WatchExact(string, func(string, any) error) (exactWatch, error)
 	PublishString(string, string) error
 }
 
@@ -45,11 +58,8 @@ func (value streamService) ListPrefix(prefix string) ([]string, error) {
 func (value streamService) GetString(subject string) (string, error) {
 	return stream.Get[string](value.client, subject)
 }
-func (value streamService) SubscribeSuffixString(
-	suffix string,
-	handler func(string, string) error,
-) (serviceSubscription, error) {
-	return stream.SubscribeSuffix(value.client, suffix, handler)
+func (value streamService) GetAny(subject string) (any, error) {
+	return stream.GetAny(value.client, subject)
 }
 func (value streamService) SubscribePrefixString(
 	prefix string,
@@ -57,23 +67,24 @@ func (value streamService) SubscribePrefixString(
 ) (serviceSubscription, error) {
 	return stream.SubscribePrefix(value.client, prefix, handler)
 }
-func (value streamService) SubscribeBool(
-	subject string,
-	handler func(string, bool) error,
+func (value streamService) SubscribeCreated(
+	handler func(stream.SubjectCreated) error,
 ) (serviceSubscription, error) {
-	return stream.Subscribe(value.client, subject, handler)
+	return stream.Subscribe(value.client, stream.SubjectCreatedSubject,
+		func(_ string, raw string) error {
+			created, err := stream.DecodeSubjectCreated(raw)
+			if err != nil {
+				return err
+			}
+			return handler(created)
+		},
+	)
 }
-func (value streamService) SubscribeInt64(
-	subject string,
-	handler func(string, int64) error,
-) (serviceSubscription, error) {
-	return stream.Subscribe(value.client, subject, handler)
-}
-func (value streamService) SubscribeFloat64(
-	subject string,
-	handler func(string, float64) error,
-) (serviceSubscription, error) {
-	return stream.Subscribe(value.client, subject, handler)
+func (value streamService) WatchExact(
+	name string,
+	handler func(string, any) error,
+) (exactWatch, error) {
+	return stream.SubscribeExact(value.client, name, handler)
 }
 func (value streamService) PublishString(subject, state string) error {
 	return stream.Set(value.client, subject, state)
@@ -85,7 +96,6 @@ type alertDefinition struct {
 	output string
 	source string
 	input  any
-	sub    serviceSubscription
 }
 
 // Service discovers alert definitions and maintains their canonical states.
@@ -102,7 +112,11 @@ type Service struct {
 	states      map[string]State
 	published   map[string]string
 	dirty       map[string]bool
+	parents     map[string][]string
 	globals     []serviceSubscription
+	configs     exactWatch
+	statesWatch exactWatch
+	inputs      exactWatch
 	running     bool
 }
 
@@ -134,6 +148,7 @@ func newService(source serviceStream, logger *log.Logger) *Service {
 		states:      make(map[string]State),
 		published:   make(map[string]string),
 		dirty:       make(map[string]bool),
+		parents:     make(map[string][]string),
 	}
 }
 
@@ -159,6 +174,9 @@ func (service *Service) Run(ctx context.Context) error {
 	service.running = true
 	service.reconcileMu.Unlock()
 
+	// Exact consumers use DeliverNewPolicy, so they must be running before the
+	// snapshot load. Known names are Watch()ed after load for live updates;
+	// Add() is reserved for registry-discovered subjects that still need Get.
 	if err := service.startWatches(); err != nil {
 		service.stop()
 		return err
@@ -212,12 +230,12 @@ func (service *Service) startWatches() error {
 		configs.Stop()
 		return fmt.Errorf("watch alert states: %w", err)
 	}
-	configSub, err := service.stream.SubscribeSuffixString(
-		configSuffix,
-		func(subject, value string) error {
+	inputs, err := service.stream.WatchExact(
+		inputsWatch,
+		func(subject string, value any) error {
 			service.reconcileMu.Lock()
 			defer service.reconcileMu.Unlock()
-			service.reconcileConfigLocked(subject, value)
+			service.acceptSourceLocked(subject, value)
 			return nil
 		},
 	)
@@ -226,24 +244,77 @@ func (service *Service) startWatches() error {
 		states.Stop()
 		return fmt.Errorf("watch alert inputs: %w", err)
 	}
-	stateSub, err := service.stream.SubscribeSuffixString(
-		alertSuffix,
+	service.reconcileMu.Lock()
+	service.configs = configs
+	service.statesWatch = states
+	service.inputs = inputs
+	service.globals = []serviceSubscription{configs, states, inputs}
+	service.reconcileMu.Unlock()
+	return nil
+}
+
+func (service *Service) subscribeGlobals() error {
+	propertySub, err := service.stream.SubscribePrefixString(
+		strings.TrimSuffix(propertiesPrefix, "."),
 		func(subject, value string) error {
 			service.reconcileMu.Lock()
 			defer service.reconcileMu.Unlock()
-			service.reconcileStateLocked(subject, value)
+			service.reconcilePropertyLocked(subject, value)
 			return nil
 		},
 	)
 	if err != nil {
-		propertySub.Stop()
-		configSub.Stop()
-		return fmt.Errorf("subscribe to alert states: %w", err)
+		return fmt.Errorf("subscribe to alert properties: %w", err)
 	}
+	createdSub, err := service.stream.SubscribeCreated(
+		func(created stream.SubjectCreated) error {
+			return service.handleCreated(created)
+		},
+	)
+	if err != nil {
+		propertySub.Stop()
+		return fmt.Errorf("subscribe to subject registry: %w", err)
+	}
+
+	if err := service.watchKnown(configSuffix, service.configs); err != nil {
+		propertySub.Stop()
+		createdSub.Stop()
+		return err
+	}
+	if err := service.watchKnown(alertSuffix, service.statesWatch); err != nil {
+		propertySub.Stop()
+		createdSub.Stop()
+		return err
+	}
+
 	service.reconcileMu.Lock()
-	service.globals = []serviceSubscription{propertySub, configSub, stateSub}
+	service.globals = append(service.globals, propertySub, createdSub)
 	service.reconcileMu.Unlock()
 	return nil
+}
+
+func (service *Service) watchKnown(suffix string, watch exactWatch) error {
+	subjects, err := service.stream.ListSuffix(suffix)
+	if err != nil {
+		return err
+	}
+	for _, subject := range subjects {
+		if err := watch.Watch(subject); err != nil {
+			service.logger.Printf("Watch %s failed: %v", subject, err)
+		}
+	}
+	return nil
+}
+
+func (service *Service) handleCreated(created stream.SubjectCreated) error {
+	switch created.Suffix {
+	case strings.TrimPrefix(configSuffix, "."):
+		return service.configs.Add(created.Subject)
+	case strings.TrimPrefix(alertSuffix, "."):
+		return service.statesWatch.Add(created.Subject)
+	default:
+		return nil
+	}
 }
 
 func (service *Service) loadInitial() error {
@@ -310,14 +381,15 @@ func (service *Service) reconcilePropertyLocked(subject, raw string) {
 	} else {
 		service.properties[subject] = properties
 	}
+	seen := make(map[string]bool)
 	for configSubject, definition := range service.definitions {
 		if definition.config.Type != TypeSummary &&
 			definitionReferences(definition.config, subject) &&
 			definition.input != nil {
 			service.evaluateDefinitionLocked(configSubject)
+			service.evaluateAncestorsLocked(definition.output, seen)
 		}
 	}
-	service.evaluateAllSummariesLocked()
 }
 
 func definitionReferences(config Config, property string) bool {
@@ -350,13 +422,13 @@ func (service *Service) reconcileConfigLocked(subject, raw string) {
 		service.logger.Printf("Invalid alert config %s: %v", subject, err)
 		if outputErr == nil {
 			service.makeInactiveLocked(output)
+			service.evaluateAncestorsLocked(output, nil)
 		}
-		service.evaluateAllSummariesLocked()
 		return
 	}
 	if !config.Enabled {
 		service.makeInactiveLocked(output)
-		service.evaluateAllSummariesLocked()
+		service.evaluateAncestorsLocked(output, nil)
 		return
 	}
 
@@ -368,61 +440,62 @@ func (service *Service) reconcileConfigLocked(subject, raw string) {
 	}
 	service.definitions[subject] = definition
 	service.byOutput[output] = subject
+	if service.statesWatch != nil {
+		if err := service.statesWatch.Watch(output); err != nil {
+			service.logger.Printf("Watch alert state %s failed: %v", output, err)
+		}
+	}
 	if config.Type == TypeSummary {
+		service.hookParentsLocked(subject, definition)
 		if service.summaryCycleLocked(output) {
 			service.logger.Printf("Invalid summary alert %s: dependency cycle", subject)
 			service.removeDefinitionLocked(subject)
 			service.makeInactiveLocked(output)
-		} else {
-			service.evaluateDefinitionLocked(subject)
+			service.evaluateAncestorsLocked(output, nil)
+			return
 		}
-		service.evaluateAllSummariesLocked()
+		for _, member := range config.Summary.Members {
+			if service.statesWatch != nil {
+				if err := service.statesWatch.Watch(member); err != nil {
+					service.logger.Printf("Watch summary member %s failed: %v", member, err)
+				}
+			}
+			service.catchUpStateLocked(member)
+		}
+		service.evaluateDefinitionLocked(subject)
+		service.evaluateAncestorsLocked(output, nil)
 		return
 	}
 
-	var sub serviceSubscription
-	switch config.Type {
-	case TypeBinary:
-		sub, err = service.stream.SubscribeBool(
-			source,
-			func(_ string, value bool) error {
-				service.reconcileMu.Lock()
-				defer service.reconcileMu.Unlock()
-				service.acceptInputLocked(subject, definition, value)
-				return nil
-			},
-		)
-	case TypeValue:
-		switch config.Value.ValueType {
-		case ValueTypeInt64:
-			sub, err = service.stream.SubscribeInt64(
-				source,
-				func(_ string, value int64) error {
-					service.reconcileMu.Lock()
-					defer service.reconcileMu.Unlock()
-					service.acceptInputLocked(subject, definition, value)
-					return nil
-				},
-			)
-		case ValueTypeFloat64:
-			sub, err = service.stream.SubscribeFloat64(
-				source,
-				func(_ string, value float64) error {
-					service.reconcileMu.Lock()
-					defer service.reconcileMu.Unlock()
-					service.acceptInputLocked(subject, definition, value)
-					return nil
-				},
-			)
-		}
-	}
-	if err != nil {
-		service.logger.Printf("Subscribe alert input for %s failed: %v", subject, err)
-		service.removeDefinitionLocked(subject)
-		service.makeInactiveLocked(output)
+	if service.inputs == nil {
 		return
 	}
-	definition.sub = sub
+	if err := service.inputs.Watch(source); err != nil {
+		service.logger.Printf("Watch alert input for %s failed: %v", subject, err)
+		service.removeDefinitionLocked(subject)
+		service.makeInactiveLocked(output)
+		service.evaluateAncestorsLocked(output, nil)
+		return
+	}
+	if value, err := service.stream.GetAny(source); err == nil {
+		service.acceptInputLocked(subject, definition, value)
+	}
+}
+
+func (service *Service) catchUpStateLocked(subject string) {
+	if _, exists := service.states[subject]; exists {
+		return
+	}
+	raw, err := service.stream.GetString(subject)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return
+	}
+	state, err := ParseState(raw)
+	if err != nil {
+		service.logger.Printf("Invalid retained alert state %s: %v", subject, err)
+		return
+	}
+	service.states[subject] = state
 }
 
 func (service *Service) removeDefinitionLocked(subject string) {
@@ -430,10 +503,52 @@ func (service *Service) removeDefinitionLocked(subject string) {
 	if definition == nil {
 		return
 	}
+	service.unhookParentsLocked(subject, definition)
 	delete(service.definitions, subject)
 	delete(service.byOutput, definition.output)
-	if definition.sub != nil {
-		definition.sub.Stop()
+	if definition.config.Type != TypeSummary && service.inputs != nil {
+		if err := service.inputs.Remove(definition.source); err != nil {
+			service.logger.Printf("Remove alert input %s failed: %v", definition.source, err)
+		}
+	}
+}
+
+func (service *Service) hookParentsLocked(subject string, definition *alertDefinition) {
+	if definition.config.Type != TypeSummary || definition.config.Summary == nil {
+		return
+	}
+	for _, member := range definition.config.Summary.Members {
+		service.parents[member] = append(service.parents[member], subject)
+	}
+}
+
+func (service *Service) unhookParentsLocked(subject string, definition *alertDefinition) {
+	if definition.config.Type != TypeSummary || definition.config.Summary == nil {
+		return
+	}
+	for _, member := range definition.config.Summary.Members {
+		service.parents[member] = removeString(service.parents[member], subject)
+		if len(service.parents[member]) == 0 {
+			delete(service.parents, member)
+		}
+	}
+}
+
+func removeString(values []string, target string) []string {
+	result := values[:0]
+	for _, value := range values {
+		if value != target {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func (service *Service) acceptSourceLocked(source string, value any) {
+	for subject, definition := range service.definitions {
+		if definition.config.Type != TypeSummary && definition.source == source {
+			service.acceptInputLocked(subject, definition, value)
+		}
 	}
 }
 
@@ -448,7 +563,7 @@ func (service *Service) acceptInputLocked(
 	}
 	definition.input = value
 	service.evaluateDefinitionLocked(subject)
-	service.evaluateAllSummariesLocked()
+	service.evaluateAncestorsLocked(definition.output, nil)
 }
 
 func (service *Service) evaluateDefinitionLocked(subject string) {
@@ -481,10 +596,6 @@ func (service *Service) evaluateDefinitionLocked(subject string) {
 			service.properties,
 		)
 	case TypeSummary:
-		if service.summaryCycleLocked(definition.output) {
-			err = errors.New("summary dependency cycle")
-			break
-		}
 		members := make(map[string]State, len(definition.config.Summary.Members))
 		for _, member := range definition.config.Summary.Members {
 			state, exists := service.states[member]
@@ -551,7 +662,6 @@ func (service *Service) storeAndPublishLocked(subject string, state State) {
 }
 
 func (service *Service) reconcileStateLocked(subject, raw string) {
-	service.logger.Printf("Reconcile alert state %s: %s", subject, raw)
 	incoming, err := parseStateUnchecked(raw)
 	if err != nil {
 		if _, owned := service.byOutput[subject]; owned {
@@ -567,7 +677,7 @@ func (service *Service) reconcileStateLocked(subject, raw string) {
 			return
 		}
 		service.states[subject] = incoming
-		service.evaluateAllSummariesLocked()
+		service.evaluateAncestorsLocked(subject, nil)
 		return
 	}
 	if reflect.DeepEqual(canonical, incoming) {
@@ -580,7 +690,7 @@ func (service *Service) reconcileStateLocked(subject, raw string) {
 		} else {
 			service.acknowledgeOneLocked(subject)
 		}
-		service.evaluateAllSummariesLocked()
+		service.evaluateAncestorsLocked(subject, nil)
 		return
 	}
 	service.republishCanonicalLocked(subject)
@@ -645,9 +755,26 @@ func (service *Service) definitionForOutputLocked(
 	return service.definitions[service.byOutput[output]]
 }
 
+func (service *Service) evaluateAncestorsLocked(output string, seen map[string]bool) {
+	if seen == nil {
+		seen = make(map[string]bool)
+	}
+	queue := append([]string(nil), service.parents[output]...)
+	for len(queue) > 0 {
+		subject := queue[0]
+		queue = queue[1:]
+		if seen[subject] {
+			continue
+		}
+		seen[subject] = true
+		service.evaluateDefinitionLocked(subject)
+		if definition := service.definitions[subject]; definition != nil {
+			queue = append(queue, service.parents[definition.output]...)
+		}
+	}
+}
+
 func (service *Service) evaluateAllSummariesLocked() {
-	// A valid summary graph is acyclic. Repeated passes propagate nested
-	// changes without requiring a separate topological data structure.
 	for pass := 0; pass <= len(service.definitions); pass++ {
 		changed := false
 		for subject, definition := range service.definitions {
@@ -698,20 +825,15 @@ func (service *Service) stop() {
 	service.reconcileMu.Lock()
 	globals := append([]serviceSubscription(nil), service.globals...)
 	service.globals = nil
-	inputs := make([]serviceSubscription, 0, len(service.definitions))
-	for _, definition := range service.definitions {
-		if definition.sub != nil {
-			inputs = append(inputs, definition.sub)
-			definition.sub.Stop()
-			definition.sub = nil
-		}
-	}
+	service.configs = nil
+	service.statesWatch = nil
+	service.inputs = nil
+	service.running = false
+	service.reconcileMu.Unlock()
 	for _, sub := range globals {
 		sub.Stop()
 	}
-	service.running = false
-	service.reconcileMu.Unlock()
-	for _, sub := range append(globals, inputs...) {
+	for _, sub := range globals {
 		<-sub.Closed()
 	}
 }

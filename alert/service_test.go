@@ -2,6 +2,7 @@ package alert
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"reflect"
@@ -10,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"go-scada/stream"
 )
 
 func TestServiceEvaluatesTransitionsAndReconcilesUpdates(t *testing.T) {
@@ -252,6 +255,58 @@ func TestServiceSummaryDominanceCycleAndFanout(t *testing.T) {
 	waitRunDone(t, done)
 }
 
+func TestServiceEvaluatesOnlyAncestorSummaries(t *testing.T) {
+	source := newFakeAlertStream()
+	source.values["AlertProperties.High"] = propertiesJSON(t, "red", 20, true)
+	source.values["Plant1.trip.alert_config"] = binaryMappedConfigJSON(
+		t, "AlertProperties.High",
+	)
+	source.values["Plant2.trip.alert_config"] = binaryMappedConfigJSON(
+		t, "AlertProperties.High",
+	)
+	source.values["Plant1.alert_config"] = summaryConfigJSON(
+		t, true, "Plant1.trip.alert",
+	)
+	source.values["Plant2.alert_config"] = summaryConfigJSON(
+		t, true, "Plant2.trip.alert",
+	)
+	service := newTestService(source)
+	cancel, done := runAlertService(t, service)
+	source.waitExact(t, "Plant1.trip")
+	source.waitExact(t, "Plant2.trip")
+	_ = source.waitState(t, "Plant1.alert")
+	_ = source.waitState(t, "Plant2.alert")
+
+	service.reconcileMu.Lock()
+	if got := service.parents["Plant1.trip.alert"]; len(got) != 1 ||
+		got[0] != "Plant1.alert_config" {
+		service.reconcileMu.Unlock()
+		t.Fatalf("plant1 parents = %v", got)
+	}
+	if got := service.parents["Plant2.trip.alert"]; len(got) != 1 ||
+		got[0] != "Plant2.alert_config" {
+		service.reconcileMu.Unlock()
+		t.Fatalf("plant2 parents = %v", got)
+	}
+	service.reconcileMu.Unlock()
+
+	source.resetPublications()
+	source.emitBool(t, "Plant1.trip", true)
+	_ = source.waitStateMatching(t, "Plant1.alert", func(state State) bool {
+		return state.Active
+	})
+	time.Sleep(20 * time.Millisecond)
+	for _, publication := range source.snapshotPublications() {
+		if publication.subject == "Plant2.alert" ||
+			publication.subject == "Plant2.trip.alert" {
+			t.Fatalf("unrelated summary was published: %s", publication.subject)
+		}
+	}
+
+	cancel()
+	waitRunDone(t, done)
+}
+
 func TestServiceSummaryConsumesExternalMemberUpdates(t *testing.T) {
 	source := newFakeAlertStream()
 	inactive := testState("", 0, false, false)
@@ -279,20 +334,14 @@ func TestServiceSummaryConsumesExternalMemberUpdates(t *testing.T) {
 type fakeAlertStream struct {
 	mu             sync.Mutex
 	values         map[string]string
-	suffixHandlers map[string]func(string, string) error
+	anys           map[string]any
 	prefixHandlers map[string]func(string, string) error
-	exactBool      map[string]*fakeTypedHandler[bool]
-	exactInt       map[string]*fakeTypedHandler[int64]
-	exactFloat     map[string]*fakeTypedHandler[float64]
+	created        func(stream.SubjectCreated) error
+	watches        map[string]*fakeExactWatch
 	subscriptions  []*fakeAlertSubscription
 	publications   []publishedAlert
 	published      chan publishedAlert
 	selfDeliver    bool
-}
-
-type fakeTypedHandler[T any] struct {
-	handler func(string, T) error
-	sub     *fakeAlertSubscription
 }
 
 type publishedAlert struct {
@@ -303,11 +352,9 @@ type publishedAlert struct {
 func newFakeAlertStream() *fakeAlertStream {
 	return &fakeAlertStream{
 		values:         make(map[string]string),
-		suffixHandlers: make(map[string]func(string, string) error),
+		anys:           make(map[string]any),
 		prefixHandlers: make(map[string]func(string, string) error),
-		exactBool:      make(map[string]*fakeTypedHandler[bool]),
-		exactInt:       make(map[string]*fakeTypedHandler[int64]),
-		exactFloat:     make(map[string]*fakeTypedHandler[float64]),
+		watches:        make(map[string]*fakeExactWatch),
 		published:      make(chan publishedAlert, 100),
 	}
 }
@@ -345,15 +392,16 @@ func (source *fakeAlertStream) GetString(subject string) (string, error) {
 	return source.values[subject], nil
 }
 
-func (source *fakeAlertStream) SubscribeSuffixString(
-	suffix string,
-	handler func(string, string) error,
-) (serviceSubscription, error) {
+func (source *fakeAlertStream) GetAny(subject string) (any, error) {
 	source.mu.Lock()
 	defer source.mu.Unlock()
-	sub := source.newSubscriptionLocked()
-	source.suffixHandlers[suffix] = handler
-	return sub, nil
+	if value, ok := source.anys[subject]; ok {
+		return value, nil
+	}
+	if value, ok := source.values[subject]; ok {
+		return value, nil
+	}
+	return nil, errors.New("missing subject")
 }
 
 func (source *fakeAlertStream) SubscribePrefixString(
@@ -367,37 +415,32 @@ func (source *fakeAlertStream) SubscribePrefixString(
 	return sub, nil
 }
 
-func (source *fakeAlertStream) SubscribeBool(
-	subject string,
-	handler func(string, bool) error,
+func (source *fakeAlertStream) SubscribeCreated(
+	handler func(stream.SubjectCreated) error,
 ) (serviceSubscription, error) {
 	source.mu.Lock()
 	defer source.mu.Unlock()
 	sub := source.newSubscriptionLocked()
-	source.exactBool[subject] = &fakeTypedHandler[bool]{handler, sub}
+	source.created = handler
 	return sub, nil
 }
 
-func (source *fakeAlertStream) SubscribeInt64(
-	subject string,
-	handler func(string, int64) error,
-) (serviceSubscription, error) {
+func (source *fakeAlertStream) WatchExact(
+	name string,
+	handler func(string, any) error,
+) (exactWatch, error) {
 	source.mu.Lock()
 	defer source.mu.Unlock()
 	sub := source.newSubscriptionLocked()
-	source.exactInt[subject] = &fakeTypedHandler[int64]{handler, sub}
-	return sub, nil
-}
-
-func (source *fakeAlertStream) SubscribeFloat64(
-	subject string,
-	handler func(string, float64) error,
-) (serviceSubscription, error) {
-	source.mu.Lock()
-	defer source.mu.Unlock()
-	sub := source.newSubscriptionLocked()
-	source.exactFloat[subject] = &fakeTypedHandler[float64]{handler, sub}
-	return sub, nil
+	watch := &fakeExactWatch{
+		source:  source,
+		name:    name,
+		handler: handler,
+		sub:     sub,
+		watched: make(map[string]struct{}),
+	}
+	source.watches[name] = watch
+	return watch, nil
 }
 
 func (source *fakeAlertStream) PublishString(subject, value string) error {
@@ -406,11 +449,11 @@ func (source *fakeAlertStream) PublishString(subject, value string) error {
 	publication := publishedAlert{subject, value}
 	source.publications = append(source.publications, publication)
 	source.published <- publication
-	handler := source.suffixHandlers[alertSuffix]
+	watch := source.watches[statesWatch]
 	selfDeliver := source.selfDeliver
 	source.mu.Unlock()
-	if selfDeliver && handler != nil {
-		go func() { _ = handler(subject, value) }()
+	if selfDeliver && watch != nil {
+		go func() { _ = watch.handler(subject, value) }()
 	}
 	return nil
 }
@@ -428,20 +471,62 @@ func (source *fakeAlertStream) emitString(
 	t.Helper()
 	source.mu.Lock()
 	source.values[subject] = value
-	var handler func(string, string) error
+	var handler func(string, any) error
 	for prefix, candidate := range source.prefixHandlers {
 		if strings.HasPrefix(subject, prefix) {
-			handler = candidate
+			source.mu.Unlock()
+			if err := candidate(subject, value); err != nil {
+				t.Fatal(err)
+			}
+			return
 		}
 	}
-	for suffix, candidate := range source.suffixHandlers {
-		if strings.HasSuffix(subject, suffix) {
-			handler = candidate
+	for _, watch := range source.watches {
+		if _, watched := watch.watched[subject]; watched && !watch.sub.stopped() {
+			handler = watch.handler
+			break
+		}
+	}
+	if handler == nil {
+		if strings.HasSuffix(subject, configSuffix) {
+			if watch := source.watches[configsWatch]; watch != nil && !watch.sub.stopped() {
+				handler = watch.handler
+			}
+		} else if strings.HasSuffix(subject, alertSuffix) {
+			if watch := source.watches[statesWatch]; watch != nil && !watch.sub.stopped() {
+				handler = watch.handler
+			}
 		}
 	}
 	source.mu.Unlock()
 	if handler == nil {
 		t.Fatalf("no string handler for %s", subject)
+	}
+	if err := handler(subject, value); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (source *fakeAlertStream) emitTyped(
+	t *testing.T,
+	subject string,
+	value any,
+) {
+	t.Helper()
+	source.mu.Lock()
+	source.anys[subject] = value
+	watch := source.watches[inputsWatch]
+	watched := watch != nil && !watch.sub.stopped()
+	if watched {
+		_, watched = watch.watched[subject]
+	}
+	var handler func(string, any) error
+	if watched {
+		handler = watch.handler
+	}
+	source.mu.Unlock()
+	if handler == nil {
+		t.Fatalf("no active input handler for %s", subject)
 	}
 	if err := handler(subject, value); err != nil {
 		t.Fatal(err)
@@ -454,15 +539,7 @@ func (source *fakeAlertStream) emitBool(
 	value bool,
 ) {
 	t.Helper()
-	source.mu.Lock()
-	entry := source.exactBool[subject]
-	source.mu.Unlock()
-	if entry == nil || entry.sub.stopped() {
-		t.Fatalf("no active bool handler for %s", subject)
-	}
-	if err := entry.handler(subject, value); err != nil {
-		t.Fatal(err)
-	}
+	source.emitTyped(t, subject, value)
 }
 
 func (source *fakeAlertStream) emitInt64(
@@ -471,15 +548,7 @@ func (source *fakeAlertStream) emitInt64(
 	value int64,
 ) {
 	t.Helper()
-	source.mu.Lock()
-	entry := source.exactInt[subject]
-	source.mu.Unlock()
-	if entry == nil || entry.sub.stopped() {
-		t.Fatalf("no active int64 handler for %s", subject)
-	}
-	if err := entry.handler(subject, value); err != nil {
-		t.Fatal(err)
-	}
+	source.emitTyped(t, subject, value)
 }
 
 func (source *fakeAlertStream) emitFloat64(
@@ -488,15 +557,7 @@ func (source *fakeAlertStream) emitFloat64(
 	value float64,
 ) {
 	t.Helper()
-	source.mu.Lock()
-	entry := source.exactFloat[subject]
-	source.mu.Unlock()
-	if entry == nil || entry.sub.stopped() {
-		t.Fatalf("no active float64 handler for %s", subject)
-	}
-	if err := entry.handler(subject, value); err != nil {
-		t.Fatal(err)
-	}
+	source.emitTyped(t, subject, value)
 }
 
 func (source *fakeAlertStream) waitExact(t *testing.T, subject string) {
@@ -516,9 +577,25 @@ func (source *fakeAlertStream) waitSuffix(t *testing.T, suffix string) {
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		source.mu.Lock()
-		handler := source.suffixHandlers[suffix]
+		ready := false
+		for _, watch := range source.watches {
+			if watch.sub.stopped() {
+				continue
+			}
+			if suffix == alertSuffix && watch.name == statesWatch {
+				ready = true
+			}
+			if suffix == configSuffix && watch.name == configsWatch {
+				ready = true
+			}
+			for subject := range watch.watched {
+				if strings.HasSuffix(subject, suffix) {
+					ready = true
+				}
+			}
+		}
 		source.mu.Unlock()
-		if handler != nil {
+		if ready {
 			return
 		}
 		time.Sleep(time.Millisecond)
@@ -529,16 +606,12 @@ func (source *fakeAlertStream) waitSuffix(t *testing.T, suffix string) {
 func (source *fakeAlertStream) exactActive(subject string) bool {
 	source.mu.Lock()
 	defer source.mu.Unlock()
-	if entry := source.exactBool[subject]; entry != nil {
-		return !entry.sub.stopped()
+	watch := source.watches[inputsWatch]
+	if watch == nil || watch.sub.stopped() {
+		return false
 	}
-	if entry := source.exactInt[subject]; entry != nil {
-		return !entry.sub.stopped()
-	}
-	if entry := source.exactFloat[subject]; entry != nil {
-		return !entry.sub.stopped()
-	}
-	return false
+	_, watched := watch.watched[subject]
+	return watched
 }
 
 func (source *fakeAlertStream) waitState(t *testing.T, subject string) State {
@@ -600,6 +673,12 @@ func (source *fakeAlertStream) publishCount() int {
 	return len(source.publications)
 }
 
+func (source *fakeAlertStream) snapshotPublications() []publishedAlert {
+	source.mu.Lock()
+	defer source.mu.Unlock()
+	return append([]publishedAlert(nil), source.publications...)
+}
+
 func (source *fakeAlertStream) activeSubscriptions() int {
 	source.mu.Lock()
 	defer source.mu.Unlock()
@@ -610,6 +689,56 @@ func (source *fakeAlertStream) activeSubscriptions() int {
 		}
 	}
 	return count
+}
+
+type fakeExactWatch struct {
+	source  *fakeAlertStream
+	name    string
+	handler func(string, any) error
+	sub     *fakeAlertSubscription
+	watched map[string]struct{}
+}
+
+func (watch *fakeExactWatch) Add(subject string) error {
+	return watch.ensure(subject, true)
+}
+
+func (watch *fakeExactWatch) Watch(subject string) error {
+	return watch.ensure(subject, false)
+}
+
+func (watch *fakeExactWatch) Remove(subject string) error {
+	watch.source.mu.Lock()
+	defer watch.source.mu.Unlock()
+	delete(watch.watched, subject)
+	return nil
+}
+
+func (watch *fakeExactWatch) ensure(subject string, catchUp bool) error {
+	watch.source.mu.Lock()
+	watch.watched[subject] = struct{}{}
+	var value any
+	if catchUp {
+		if stored, ok := watch.source.anys[subject]; ok {
+			value = stored
+		} else if stored, ok := watch.source.values[subject]; ok {
+			value = stored
+		}
+	}
+	handler := watch.handler
+	watch.source.mu.Unlock()
+	if catchUp && value != nil {
+		return handler(subject, value)
+	}
+	return nil
+}
+
+func (watch *fakeExactWatch) Stop() {
+	watch.sub.Stop()
+}
+
+func (watch *fakeExactWatch) Closed() <-chan struct{} {
+	return watch.sub.Closed()
 }
 
 type fakeAlertSubscription struct {
