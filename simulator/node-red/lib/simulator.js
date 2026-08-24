@@ -1,9 +1,18 @@
 'use strict'
 
+const TANK_COUNT = 10
+const TANK_FLOAT_STRIDE = 20
+const TANK_DISCRETE_STRIDE = 3
+const TANK_COIL_STRIDE = 2
+
 const REGISTER_MAP = Object.freeze({
   tank: Object.freeze({
     port: 1502,
     unitId: 1,
+    count: TANK_COUNT,
+    floatStride: TANK_FLOAT_STRIDE,
+    discreteStride: TANK_DISCRETE_STRIDE,
+    coilStride: TANK_COIL_STRIDE,
     floats: Object.freeze({
       level: 0,
       temperature: 4,
@@ -50,36 +59,60 @@ const REGISTER_MAP = Object.freeze({
 const DEFAULT_CONTROLS = Object.freeze({
   automatic: true,
   speed: 1,
-  inletCommand: 70,
-  outletCommand: 45,
+  selectedTank: 0,
   coolingCommand: 40,
   pump1Command: true,
   pump2Command: false
 })
 
-const DEFAULT_FAULTS = Object.freeze({
+const DEFAULT_PLANT_FAULTS = Object.freeze({
   pump1Trip: false,
   pump2Trip: false,
+  sensorFreeze: false
+})
+
+const DEFAULT_TANK_FAULTS = Object.freeze({
   inletStuck: false,
   outletStuck: false,
   highTemperature: false,
-  sensorFreeze: false,
   sensorBad: false
 })
 
+const TANK_COMMAND_TOPICS = new Set(['inletCommand', 'outletCommand'])
+const TANK_FAULT_TOPICS = new Set(Object.keys(DEFAULT_TANK_FAULTS))
+const BOOLEAN_PLANT_CONTROLS = new Set(['automatic', 'pump1Command', 'pump2Command'])
+
 function clamp (value, min, max) {
   return Math.min(max, Math.max(min, value))
+}
+
+function selectedTankIndex (state) {
+  return clamp(Math.round(Number(state.controls.selectedTank) || 0), 0, TANK_COUNT - 1)
+}
+
+function selectedTank (state) {
+  return state.tanks[selectedTankIndex(state)]
+}
+
+function initialTank (index) {
+  return {
+    id: index + 1,
+    seed: (0x5ca1ab1e ^ Math.imul(index + 1, 0x9e3779b9)) >>> 0,
+    level: 40 + index * 3,
+    temperature: 22 + index * 0.4,
+    pressure: 1.8 + index * 0.05,
+    inletPosition: 70,
+    outletPosition: 45,
+    inletCommand: 70,
+    outletCommand: 45,
+    faults: { ...DEFAULT_TANK_FAULTS }
+  }
 }
 
 function initialState () {
   return {
     tick: 0,
     seed: 0x5ca1ab1e,
-    level: 55,
-    temperature: 24,
-    pressure: 2.1,
-    inletPosition: 70,
-    outletPosition: 45,
     coolingValvePosition: 40,
     pump1Speed: 72,
     pump2Speed: 0,
@@ -90,19 +123,40 @@ function initialState () {
     vibration: 1.2,
     ambientTemperature: 21,
     conductivity: 480,
+    tanks: Array.from({ length: TANK_COUNT }, (_, index) => initialTank(index)),
     controls: { ...DEFAULT_CONTROLS },
-    faults: { ...DEFAULT_FAULTS },
+    faults: { ...DEFAULT_PLANT_FAULTS },
     frozenMeasurements: null
   }
 }
 
-function nextNoise (state, amplitude) {
-  state.seed = (Math.imul(state.seed, 1664525) + 1013904223) >>> 0
-  return ((state.seed / 0xffffffff) * 2 - 1) * amplitude
+function nextNoise (rng, amplitude) {
+  rng.seed = (Math.imul(rng.seed, 1664525) + 1013904223) >>> 0
+  return ((rng.seed / 0xffffffff) * 2 - 1) * amplitude
 }
 
 function approach (value, target, amount) {
   return value + (target - value) * clamp(amount, 0, 1)
+}
+
+function maxTankValue (tanks, field) {
+  return tanks.reduce((highest, tank) => Math.max(highest, tank[field]), tanks[0][field])
+}
+
+function meanTankValue (tanks, field) {
+  return tanks.reduce((sum, tank) => sum + tank[field], 0) / tanks.length
+}
+
+function tankFloatAddress (tankIndex, field) {
+  return tankIndex * TANK_FLOAT_STRIDE + REGISTER_MAP.tank.floats[field]
+}
+
+function tankDiscreteAddress (tankIndex, field) {
+  return tankIndex * TANK_DISCRETE_STRIDE + REGISTER_MAP.tank.discrete[field]
+}
+
+function tankCoilAddress (tankIndex, field) {
+  return tankIndex * TANK_COIL_STRIDE + REGISTER_MAP.tank.coils[field]
 }
 
 function step (previous, elapsedSeconds = 1) {
@@ -111,19 +165,25 @@ function step (previous, elapsedSeconds = 1) {
     clamp(Number(state.controls.speed) || 1, 0.1, 10)
 
   if (state.controls.automatic) {
-    const levelError = 60 - state.level
-    state.controls.inletCommand = clamp(58 + levelError * 1.8, 5, 100)
-    state.controls.outletCommand = clamp(42 - levelError * 0.7, 5, 90)
-    state.controls.pump1Command = state.level > 18
-    state.controls.pump2Command = state.level > 72
-    state.controls.coolingCommand = clamp(35 + (state.temperature - 25) * 5, 10, 100)
+    for (const tank of state.tanks) {
+      const levelError = 60 - tank.level
+      tank.inletCommand = clamp(58 + levelError * 1.8, 5, 100)
+      tank.outletCommand = clamp(42 - levelError * 0.7, 5, 90)
+    }
+    const maxLevel = maxTankValue(state.tanks, 'level')
+    const maxTemperature = maxTankValue(state.tanks, 'temperature')
+    state.controls.pump1Command = maxLevel > 18
+    state.controls.pump2Command = maxLevel > 72
+    state.controls.coolingCommand = clamp(35 + (maxTemperature - 25) * 5, 10, 100)
   }
 
-  if (!state.faults.inletStuck) {
-    state.inletPosition = approach(state.inletPosition, state.controls.inletCommand, 0.18 * dt)
-  }
-  if (!state.faults.outletStuck) {
-    state.outletPosition = approach(state.outletPosition, state.controls.outletCommand, 0.18 * dt)
+  for (const tank of state.tanks) {
+    if (!tank.faults.inletStuck) {
+      tank.inletPosition = approach(tank.inletPosition, tank.inletCommand, 0.18 * dt)
+    }
+    if (!tank.faults.outletStuck) {
+      tank.outletPosition = approach(tank.outletPosition, tank.outletCommand, 0.18 * dt)
+    }
   }
   state.coolingValvePosition = approach(
     state.coolingValvePosition,
@@ -131,33 +191,43 @@ function step (previous, elapsedSeconds = 1) {
     0.15 * dt
   )
 
-  const pump1Running = Boolean(state.controls.pump1Command && !state.faults.pump1Trip && state.level > 3)
-  const pump2Running = Boolean(state.controls.pump2Command && !state.faults.pump2Trip && state.level > 3)
+  const anyProduct = state.tanks.some(tank => tank.level > 3)
+  const pump1Running = Boolean(state.controls.pump1Command && !state.faults.pump1Trip && anyProduct)
+  const pump2Running = Boolean(state.controls.pump2Command && !state.faults.pump2Trip && anyProduct)
   state.pump1Speed = approach(state.pump1Speed, pump1Running ? 72 : 0, 0.25 * dt)
   state.pump2Speed = approach(state.pump2Speed, pump2Running ? 65 : 0, 0.25 * dt)
 
-  const inletFlow = state.inletPosition * 0.42
-  const valveOutflow = state.outletPosition * 0.16
   const pumpedFlow = state.pump1Speed * 0.36 + state.pump2Speed * 0.32
-  state.totalFlow = Math.max(0, valveOutflow + pumpedFlow + nextNoise(state, 0.25))
-  state.level = clamp(state.level + (inletFlow - state.totalFlow) * 0.018 * dt, 0, 100)
+  const meanOutlet = meanTankValue(state.tanks, 'outletPosition')
+  state.totalFlow = Math.max(0, meanOutlet * 0.16 + pumpedFlow + nextNoise(state, 0.25))
 
-  const temperatureTarget = state.faults.highTemperature
-    ? 96
-    : state.ambientTemperature + 3 + (pump1Running ? 2.5 : 0) + (pump2Running ? 2 : 0)
   const cooling = state.coolingValvePosition * 0.018
-  state.temperature = clamp(
-    state.temperature + (temperatureTarget - state.temperature) * 0.012 * dt - cooling * 0.025 * dt,
-    -20,
-    130
-  )
-  state.pressure = clamp(0.8 + state.level * 0.027 + pumpedFlow * 0.035 + nextNoise(state, 0.015), 0, 10)
+  for (const tank of state.tanks) {
+    const inletFlow = tank.inletPosition * 0.42
+    const outflow = tank.outletPosition * 0.16 + pumpedFlow
+    tank.level = clamp(tank.level + (inletFlow - outflow) * 0.018 * dt, 0, 100)
+
+    const temperatureTarget = tank.faults.highTemperature
+      ? 96
+      : state.ambientTemperature + 3 + (pump1Running ? 2.5 : 0) + (pump2Running ? 2 : 0)
+    tank.temperature = clamp(
+      tank.temperature + (temperatureTarget - tank.temperature) * 0.012 * dt - cooling * 0.025 * dt,
+      -20,
+      130
+    )
+    tank.pressure = clamp(
+      0.8 + tank.level * 0.027 + pumpedFlow * 0.035 + nextNoise(tank, 0.015),
+      0,
+      10
+    )
+  }
+
   state.dischargePressure = clamp(0.6 + pumpedFlow * 0.075 + nextNoise(state, 0.02), 0, 12)
   state.pump1Current = Math.max(0, state.pump1Speed * 0.25 + nextNoise(state, 0.08))
   state.pump2Current = Math.max(0, state.pump2Speed * 0.27 + nextNoise(state, 0.08))
   state.vibration = Math.max(0, 0.25 + (state.pump1Speed + state.pump2Speed) * 0.009 + nextNoise(state, 0.03))
   state.ambientTemperature = clamp(21 + Math.sin(state.tick / 90) * 2, 15, 30)
-  state.conductivity = clamp(470 + state.level * 0.25 + nextNoise(state, 1.2), 0, 2000)
+  state.conductivity = clamp(470 + meanTankValue(state.tanks, 'level') * 0.25 + nextNoise(state, 1.2), 0, 2000)
   state.tick += 1
   return state
 }
@@ -166,42 +236,65 @@ function applyControl (state, topic, payload) {
   const target = state || initialState()
   const booleanValue = payload === true || payload === 'true' || payload === 1 || payload === '1'
   const numericValue = Number(payload)
-  const controls = {
+  const plantControls = {
     automatic: value => { target.controls.automatic = value },
     speed: value => { target.controls.speed = clamp(value, 0.1, 10) },
-    inletCommand: value => { target.controls.inletCommand = clamp(value, 0, 100) },
-    outletCommand: value => { target.controls.outletCommand = clamp(value, 0, 100) },
+    selectedTank: value => {
+      target.controls.selectedTank = clamp(Math.round(value), 0, TANK_COUNT - 1)
+    },
     coolingCommand: value => { target.controls.coolingCommand = clamp(value, 0, 100) },
     pump1Command: value => { target.controls.pump1Command = value },
     pump2Command: value => { target.controls.pump2Command = value }
   }
-  const faults = Object.keys(DEFAULT_FAULTS)
 
-  if (Object.hasOwn(controls, topic)) {
-    if (['automatic', 'pump1Command', 'pump2Command'].includes(topic)) controls[topic](booleanValue)
-    else if (Number.isFinite(numericValue)) controls[topic](numericValue)
-  } else if (faults.includes(topic)) {
+  if (Object.hasOwn(plantControls, topic)) {
+    if (BOOLEAN_PLANT_CONTROLS.has(topic)) plantControls[topic](booleanValue)
+    else if (Number.isFinite(numericValue)) plantControls[topic](numericValue)
+  } else if (TANK_COMMAND_TOPICS.has(topic) && Number.isFinite(numericValue)) {
+    selectedTank(target)[topic] = clamp(numericValue, 0, 100)
+  } else if (Object.hasOwn(DEFAULT_PLANT_FAULTS, topic)) {
     target.faults[topic] = booleanValue
     if (topic === 'sensorFreeze') {
       target.frozenMeasurements = booleanValue ? measurements(target, false) : null
     }
+  } else if (TANK_FAULT_TOPICS.has(topic)) {
+    selectedTank(target).faults[topic] = booleanValue
   } else if (topic === 'resetFaults') {
-    target.faults = { ...DEFAULT_FAULTS }
+    target.faults = { ...DEFAULT_PLANT_FAULTS }
     target.frozenMeasurements = null
+    for (const tank of target.tanks) {
+      tank.faults = { ...DEFAULT_TANK_FAULTS }
+    }
   }
   return target
 }
 
+function tankMeasurements (tank, applySensorFaults = true) {
+  const values = {
+    id: tank.id,
+    level: tank.level,
+    temperature: tank.temperature,
+    pressure: tank.pressure,
+    inletPosition: tank.inletPosition,
+    outletPosition: tank.outletPosition,
+    sensorBad: tank.faults.sensorBad
+  }
+  if (applySensorFaults && tank.faults.sensorBad) {
+    values.level = 999.9
+    values.temperature = 999.9
+  }
+  return values
+}
+
 function measurements (state, applySensorFaults = true) {
   if (applySensorFaults && state.faults.sensorFreeze && state.frozenMeasurements) {
-    return { ...state.frozenMeasurements, sensorBad: false }
+    return {
+      ...state.frozenMeasurements,
+      tanks: state.frozenMeasurements.tanks.map(tank => ({ ...tank, sensorBad: false }))
+    }
   }
-  const values = {
-    level: state.level,
-    temperature: state.temperature,
-    pressure: state.pressure,
-    inletPosition: state.inletPosition,
-    outletPosition: state.outletPosition,
+  return {
+    tanks: state.tanks.map(tank => tankMeasurements(tank, applySensorFaults)),
     pump1Speed: state.pump1Speed,
     pump1Current: state.pump1Current,
     dischargePressure: state.dischargePressure,
@@ -211,14 +304,8 @@ function measurements (state, applySensorFaults = true) {
     vibration: state.vibration,
     ambientTemperature: state.ambientTemperature,
     conductivity: state.conductivity,
-    coolingValvePosition: state.coolingValvePosition,
-    sensorBad: state.faults.sensorBad
+    coolingValvePosition: state.coolingValvePosition
   }
-  if (applySensorFaults && state.faults.sensorBad) {
-    values.level = 999.9
-    values.temperature = 999.9
-  }
-  return values
 }
 
 function encodeFloat32 (value) {
@@ -240,11 +327,13 @@ function floatWrites (register, address, value) {
 }
 
 function bitFieldWrite (register, values) {
-  const packed = values.reduce(
-    (result, value, index) => result | (value ? 1 << index : 0),
-    0
-  )
-  return { payload: { register, address: 0, value: packed } }
+  const bytes = []
+  for (let index = 0; index < values.length; index++) {
+    const byteIndex = Math.floor(index / 8)
+    bytes[byteIndex] = bytes[byteIndex] || 0
+    if (values[index]) bytes[byteIndex] |= 1 << (index % 8)
+  }
+  return { payload: { register, address: 0, value: bytes } }
 }
 
 function messagesForSlaves (state) {
@@ -252,13 +341,18 @@ function messagesForSlaves (state) {
   const pump1Running = state.pump1Speed > 5 && !state.faults.pump1Trip
   const pump2Running = state.pump2Speed > 5 && !state.faults.pump2Trip
   const tank = []
-  for (const [name, address] of Object.entries(REGISTER_MAP.tank.floats)) {
-    tank.push(floatWrites('input', address, value[name]))
+  const discreteBits = []
+  const coilBits = []
+  for (let index = 0; index < TANK_COUNT; index++) {
+    const published = value.tanks[index]
+    const source = state.tanks[index]
+    for (const name of Object.keys(REGISTER_MAP.tank.floats)) {
+      tank.push(floatWrites('input', tankFloatAddress(index, name), published[name]))
+    }
+    discreteBits.push(source.level >= 80, source.level <= 20, published.sensorBad)
+    coilBits.push(source.inletPosition > 5, source.outletPosition > 5)
   }
-  tank.push(
-    bitFieldWrite('discrete', [state.level >= 80, state.level <= 20, value.sensorBad]),
-    bitFieldWrite('coils', [state.inletPosition > 5, state.outletPosition > 5])
-  )
+  tank.push(bitFieldWrite('discrete', discreteBits), bitFieldWrite('coils', coilBits))
 
   const pumps = []
   for (const [name, address] of Object.entries(REGISTER_MAP.pumps.floats)) {
@@ -273,13 +367,14 @@ function messagesForSlaves (state) {
     ])
   )
 
+  const hottest = maxTankValue(state.tanks, 'temperature')
   const utility = []
   for (const [name, address] of Object.entries(REGISTER_MAP.utility.floats)) {
     const sourceName = name === 'processFlow' ? 'totalFlow' : name
     utility.push(floatWrites('input', address, value[sourceName]))
   }
   utility.push(
-    bitFieldWrite('discrete', [value.temperature >= 80, value.totalFlow < 10]),
+    bitFieldWrite('discrete', [hottest >= 80, value.totalFlow < 10]),
     bitFieldWrite('coils', [state.coolingValvePosition > 5])
   )
   return { tank, pumps, utility }
@@ -287,30 +382,62 @@ function messagesForSlaves (state) {
 
 function dashboardState (state) {
   const value = measurements(state)
+  const selected = selectedTankIndex(state)
+  const tank = value.tanks[selected]
+  const source = state.tanks[selected]
   return {
     ...value,
-    controls: { ...state.controls },
-    faults: { ...state.faults },
+    ...tank,
+    selectedTank: selected,
+    tanks: value.tanks.map((published, index) => ({
+      ...published,
+      inletCommand: state.tanks[index].inletCommand,
+      outletCommand: state.tanks[index].outletCommand,
+      faults: { ...state.tanks[index].faults },
+      status: {
+        levelHigh: state.tanks[index].level >= 80,
+        levelLow: state.tanks[index].level <= 20,
+        temperatureHigh: state.tanks[index].temperature >= 80
+      }
+    })),
+    controls: {
+      ...state.controls,
+      selectedTank: selected,
+      inletCommand: source.inletCommand,
+      outletCommand: source.outletCommand
+    },
+    faults: {
+      ...state.faults,
+      ...source.faults
+    },
     status: {
-      levelHigh: state.level >= 80,
-      levelLow: state.level <= 20,
+      levelHigh: state.tanks.some(item => item.level >= 80),
+      levelLow: state.tanks.some(item => item.level <= 20),
       pump1Running: state.pump1Speed > 5 && !state.faults.pump1Trip,
       pump2Running: state.pump2Speed > 5 && !state.faults.pump2Trip,
-      temperatureHigh: state.temperature >= 80,
+      temperatureHigh: maxTankValue(state.tanks, 'temperature') >= 80,
       flowLow: state.totalFlow < 10
     }
   }
 }
 
 module.exports = {
+  TANK_COUNT,
+  TANK_FLOAT_STRIDE,
+  TANK_DISCRETE_STRIDE,
+  TANK_COIL_STRIDE,
   REGISTER_MAP,
   DEFAULT_CONTROLS,
-  DEFAULT_FAULTS,
+  DEFAULT_PLANT_FAULTS,
+  DEFAULT_TANK_FAULTS,
   initialState,
   step,
   applyControl,
   measurements,
   encodeFloat32,
   messagesForSlaves,
-  dashboardState
+  dashboardState,
+  tankFloatAddress,
+  tankDiscreteAddress,
+  tankCoilAddress
 }

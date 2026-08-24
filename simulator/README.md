@@ -1,8 +1,9 @@
 # Node-RED Modbus simulator
 
-The simulator models a small process plant and exposes its values through three
-independent Modbus TCP servers. The normal `modbus-service` polls those servers,
-publishes telemetry to NATS, and feeds the designer and alert service.
+The simulator models a small process plant with 10 tanks and exposes its values
+through three independent Modbus TCP servers. The normal `modbus-service` polls
+those servers, publishes telemetry to NATS, and feeds the designer and alert
+service.
 
 ## Start and stop
 
@@ -47,18 +48,23 @@ discrete inputs or coils.
 
 ### Tank PLC
 
-Endpoint `localhost:1502`, configured as unit ID 1:
+Endpoint `localhost:1502`, configured as unit ID 1. Each simulator instance
+exposes 10 tanks. Tank *n* (1-based) occupies a 20-register analog block and
+three discrete inputs plus two coils:
 
-- Input 0-1: tank level, percent
-- Input 4-5: tank temperature, degrees Celsius
-- Input 8-9: hydrostatic pressure, bar
-- Input 12-13: inlet valve position, percent
-- Input 16-17: outlet valve position, percent
-- Discrete 0: high-level switch
-- Discrete 1: low-level switch
-- Discrete 2: bad-sensor status
-- Coil 0: inlet valve open
-- Coil 1: outlet valve open
+- Input `20*(n-1)` + 0-1: tank level, percent
+- Input `20*(n-1)` + 4-5: tank temperature, degrees Celsius
+- Input `20*(n-1)` + 8-9: hydrostatic pressure, bar
+- Input `20*(n-1)` + 12-13: inlet valve position, percent
+- Input `20*(n-1)` + 16-17: outlet valve position, percent
+- Discrete `3*(n-1)` + 0: high-level switch
+- Discrete `3*(n-1)` + 1: low-level switch
+- Discrete `3*(n-1)` + 2: bad-sensor status
+- Coil `2*(n-1)` + 0: inlet valve open
+- Coil `2*(n-1)` + 1: outlet valve open
+
+Tank 1 therefore keeps the original map (inputs 0-17, discrete 0-2, coils 0-1).
+Tank 10 uses inputs 180-197, discrete 27-29, and coils 18-19.
 
 ### Pump PLC
 
@@ -87,23 +93,27 @@ Endpoint `localhost:1504`, configured as unit ID 3:
 - Coil 0: cooling valve open
 
 The complete Modbus-to-subject mapping is in
-`simulator/config/descriptors.json`.
+`simulator/config/descriptors.json`. Seeded SCADA addresses currently follow
+tank 1 (the original register block). Tanks 2-10 are live on the Tank PLC and
+the Node-RED dashboard; they are not yet published as `plant.tank.*` points.
 
 ## Process behavior and controls
 
-Automatic mode regulates the tank around 60 percent by adjusting inlet and
-outlet valves and staging two pumps. Pump speed affects flow, pressure, current,
+Automatic mode regulates each tank around 60 percent by adjusting that tank's
+inlet and outlet valves. The two pumps stage from the highest tank level, and
+cooling follows the hottest tank. Pump speed affects flow, pressure, current,
 temperature, and vibration. Analog values contain small deterministic noise so
-trends look realistic while tests remain repeatable.
+trends look realistic while tests remain repeatable. Tanks start at different
+levels and use independent noise seeds so they do not stay identical.
 
-The dashboard can switch to manual mode, change valve and pump commands, alter
-simulation speed, and inject:
+The dashboard can select a tank, switch to manual mode, change that tank's valve
+commands and the shared pump commands, alter simulation speed, and inject:
 
 - pump 1 or pump 2 trips
-- stuck inlet or outlet valves
-- a high-temperature heat source
+- stuck inlet or outlet valves on the selected tank
+- a high-temperature heat source on the selected tank
 - frozen analog measurements
-- bad tank sensor values
+- bad tank sensor values on the selected tank
 
 The high-level and high-temperature conditions are seeded as SCADA alert
 definitions. Resetting faults does not reset process values; the automatic
@@ -141,6 +151,6 @@ go test ./simulator ./modbus
 docker compose --profile simulation config --quiet
 ```
 
-The Node tests cover process bounds, fault behavior, register encoding, and
-register-map overlap. The Go tests validate every seeded connection and address
-with the same parsers used by the running Modbus service.
+The Node tests cover the 10-tank layout, process bounds, fault behavior,
+register encoding, and register-map overlap. The Go tests validate every seeded
+connection and address with the same parsers used by the running Modbus service.
