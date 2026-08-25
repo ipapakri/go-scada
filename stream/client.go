@@ -232,9 +232,6 @@ func ListSubjects(client *Client, suffix string) ([]string, error) {
 		return nil, errors.New("stream client is not initialized")
 	}
 	suffix = strings.TrimSpace(suffix)
-	if suffix == "" {
-		return nil, errors.New("subject suffix is required")
-	}
 	return client.listSubjects(retain.ListRequest{Suffix: suffix})
 }
 
