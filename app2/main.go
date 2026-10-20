@@ -40,51 +40,14 @@ func main() {
 	log.Println("Stream client created")
 	defer streamClient.Close()
 
-	/*subject := "sensor1.value"
-	temperatureSubscription, err := stream.Subscribe(
-		streamClient,
-		subject,
-		floatHandler,
-	)
+	subjects, err := stream.ListSubjects(streamClient, ".trip")
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to list subjects: %v", err)
 	}
-	defer temperatureSubscription.Stop()*/
-
-	statusSubject := "scada.demo.status"
-	//stateSubject := "scada.demo.state"
-	stateSubject := "sensor1.value"
-	messageSubject := "scada.demo.message"
-
-	statusSubscription, err := stream.Subscribe(
-		streamClient,
-		statusSubject,
-		boolHandler,
-	)
-	if err != nil {
-		log.Fatal(err)
+	log.Println("Subjects listed")
+	for _, subject := range subjects {
+		log.Println(subject)
 	}
-	defer statusSubscription.Stop()
-
-	stateSubscription, err := stream.Subscribe(
-		streamClient,
-		stateSubject,
-		int64Handler,
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer stateSubscription.Stop()
-
-	messageSubscription, err := stream.Subscribe(
-		streamClient,
-		messageSubject,
-		stringHandler,
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer messageSubscription.Stop()
 
 	select {}
 }
