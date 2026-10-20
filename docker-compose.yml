@@ -11,7 +11,7 @@ services:
     restart: unless-stopped
 
   retain-service:
-    profiles: ["run"]
+    profiles: ["base"]
     build:
       context: .
       target: retain-service
@@ -19,14 +19,14 @@ services:
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro
       - ./retain-data:/data
-    depends_on:
-      - nats
     restart: unless-stopped
 
   simulator:
     profiles: ["simulation"]
     build:
       context: ./simulator/node-red
+    environment:
+      SIMULATOR_INSTANCES: ${SIMULATOR_INSTANCES:-10}
     ports:
       - "${SIMULATOR_DASHBOARD_PORT:-1880}:1880"
       - "1502:1502"
@@ -48,7 +48,7 @@ services:
     build:
       context: .
       target: simulator-seed
-    command: ["-replicas", "${SIMULATOR_REPLICAS:-100}"]
+    command: ["-replicas", "${SIMULATOR_REPLICAS:-10}"]
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro
     restart: on-failure
@@ -58,25 +58,21 @@ services:
     build:
       context: .
       target: modbus-service
-    depends_on:
-      - retain-service
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro
     restart: unless-stopped
 
   alert-service:
-    profiles: ["run"]
+    profiles: ["run", "alert-service"]
     build:
       context: .
       target: alert-service
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro
-    depends_on:
-      - retain-service
     restart: unless-stopped
 
   designer:
-    profiles: ["run"]
+    profiles: ["run", "designer"]
     build:
       context: .
       target: designer
@@ -84,6 +80,4 @@ services:
       - "8080:8080"
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro
-    depends_on:
-      - retain-service
     restart: unless-stopped
